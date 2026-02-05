@@ -2,20 +2,24 @@
 # Standalone Wrapper Script Template
 # Generic 3-step wrapper: env setup → pre-script → main script
 
+# === Resolve script directory ===
+WRAPPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${WRAPPER_DIR}/.." && pwd)"
+
 # === Configuration ===
-# Environment setup (optional - use absolute paths, leave empty to skip)
-ENV_SOURCE_SCRIPT="/path/to/env/env-setup.sh"   # Script to source (sets env vars)
-PRE_SCRIPT="/path/to/pre/pre-script.sh"         # Pre-execution script (optional)
+# Environment setup (optional - absolute or relative to PROJECT_ROOT, leave empty to skip)
+ENV_SOURCE_SCRIPT="${PROJECT_ROOT}/scripts/env-setup.sh"   # Script to source (sets env vars)
+PRE_SCRIPT="${PROJECT_ROOT}/scripts/pre-script.sh"         # Pre-execution script (optional)
 
 # Main script configuration
-SCRIPT_DIR="/path/to/script/directory"    # Directory to cd into for main script
+SCRIPT_DIR="${PROJECT_ROOT}/scripts"       # Directory to cd into for main script
 SCRIPT_NAME="your-script.sh"              # Main script filename
 
 # === Main Execution ===
 echo "=== Wrapper Script Started ==="
 echo "Parameters: PARAM1=$PARAM1, PARAM2=$PARAM2, PARAM3=$PARAM3"
 
-# --- Step 1: Source Environment Script (absolute path) ---
+# --- Step 1: Source Environment Script ---
 if [ -n "$ENV_SOURCE_SCRIPT" ]; then
     echo "--- Environment Setup ---"
     if [ -f "$ENV_SOURCE_SCRIPT" ]; then
@@ -27,7 +31,7 @@ if [ -n "$ENV_SOURCE_SCRIPT" ]; then
     fi
 fi
 
-# --- Step 2: Pre-execution Script (absolute path, optional) ---
+# --- Step 2: Pre-execution Script (optional) ---
 if [ -n "$PRE_SCRIPT" ]; then
     echo "--- Running Pre-script ---"
     if [ -f "$PRE_SCRIPT" ]; then
