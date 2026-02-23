@@ -463,6 +463,247 @@ test_task_no_result_file() {
     fi
 }
 
+# ============================================
+# Alertmanager Webhook Tests
+# ============================================
+
+# Helper: send Alertmanager webhook payload
+send_alertmanager_webhook() {
+    local PAYLOAD="$1"
+    curl -s -w "\n%{http_code}" -X POST \
+        -H "Content-Type: application/json" \
+        -d "$PAYLOAD" \
+        "$BASE_URL/webhooks/alertmanager"
+}
+
+# Test: Single firing alert (basic functionality)
+test_webhook_single_alert() {
+    info "Testing webhook: single firing alert"
+
+    RESULT=$(send_alertmanager_webhook '{
+        "version": "4",
+        "status": "firing",
+        "groupKey": "{}:{alertname=\"HighMemory\"}",
+        "commonLabels": {"alertname": "HighMemory", "aqsh_task": "alert-handler"},
+        "externalURL": "http://alertmanager:9093",
+        "alerts": [{
+            "status": "firing",
+            "labels": {"alertname": "HighMemory", "aqsh_task": "alert-handler", "instance": "web-1", "severity": "critical"},
+            "annotations": {"summary": "Test alert"},
+            "startsAt": "2024-01-01T00:00:00Z",
+            "endsAt": "0001-01-01T00:00:00Z",
+            "fingerprint": "test-single-001"
+        }]
+    }')
+
+    HTTP_CODE=$(echo "$RESULT" | tail -1)
+    RESP=$(echo "$RESULT" | head -n -1)
+
+    if [ "$HTTP_CODE" = "202" ]; then
+        pass "Webhook single alert returns 202"
+    else
+        fail "Webhook single alert returns 202" "202" "$HTTP_CODE (body: $RESP)"
+    fi
+
+    if echo "$RESP" | grep -q '"task_name":"alert-handler"'; then
+        pass "Webhook response contains task_name"
+    else
+        fail "Webhook response contains task_name" "alert-handler" "$RESP"
+    fi
+
+    if echo "$RESP" | grep -q '"status":"pending"'; then
+        pass "Webhook response shows pending status"
+    else
+        fail "Webhook response shows pending status" "pending" "$RESP"
+    fi
+
+    # Extract task ID and verify it completes
+    TASK_ID=$(echo "$RESP" | grep -o '"task_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    if [ -n "$TASK_ID" ]; then
+        sleep 5
+        TASK_RESP=$(curl -s "$BASE_URL/tasks/$TASK_ID")
+        if echo "$TASK_RESP" | grep -q '"status":"completed"'; then
+            pass "Webhook-triggered task completed successfully"
+        else
+            fail "Webhook-triggered task completed" "completed" "$TASK_RESP"
+        fi
+    fi
+}
+
+# Test: firing then resolved (status flow)
+test_webhook_firing_resolved() {
+    info "Testing webhook: firing -> resolved flow"
+
+    # Send firing alert
+    RESULT=$(send_alertmanager_webhook '{
+        "version": "4",
+        "status": "firing",
+        "groupKey": "{}:{alertname=\"DiskFull\"}",
+        "commonLabels": {"alertname": "DiskFull", "aqsh_task": "alert-handler"},
+        "externalURL": "http://alertmanager:9093",
+        "alerts": [{
+            "status": "firing",
+            "labels": {"alertname": "DiskFull", "aqsh_task": "alert-handler", "instance": "db-1", "severity": "warning"},
+            "annotations": {"summary": "Disk full"},
+            "startsAt": "2024-01-01T00:00:00Z",
+            "endsAt": "0001-01-01T00:00:00Z",
+            "fingerprint": "test-flow-001"
+        }]
+    }')
+
+    HTTP_CODE=$(echo "$RESULT" | tail -1)
+    RESP=$(echo "$RESULT" | head -n -1)
+
+    if [ "$HTTP_CODE" = "202" ]; then
+        pass "Webhook firing alert returns 202"
+    else
+        fail "Webhook firing alert returns 202" "202" "$HTTP_CODE"
+    fi
+
+    FIRING_TASK_ID=$(echo "$RESP" | grep -o '"task_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    # Send resolved alert
+    RESULT=$(send_alertmanager_webhook '{
+        "version": "4",
+        "status": "resolved",
+        "groupKey": "{}:{alertname=\"DiskFull\"}",
+        "commonLabels": {"alertname": "DiskFull", "aqsh_task": "alert-handler"},
+        "externalURL": "http://alertmanager:9093",
+        "alerts": [{
+            "status": "resolved",
+            "labels": {"alertname": "DiskFull", "aqsh_task": "alert-handler", "instance": "db-1", "severity": "warning"},
+            "annotations": {"summary": "Disk full"},
+            "startsAt": "2024-01-01T00:00:00Z",
+            "endsAt": "2024-01-01T01:00:00Z",
+            "fingerprint": "test-flow-002"
+        }]
+    }')
+
+    HTTP_CODE=$(echo "$RESULT" | tail -1)
+    RESP=$(echo "$RESULT" | head -n -1)
+
+    if [ "$HTTP_CODE" = "202" ]; then
+        pass "Webhook resolved alert returns 202"
+    else
+        fail "Webhook resolved alert returns 202" "202" "$HTTP_CODE"
+    fi
+
+    RESOLVED_TASK_ID=$(echo "$RESP" | grep -o '"task_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    # Wait and verify both tasks completed
+    sleep 5
+
+    if [ -n "$FIRING_TASK_ID" ]; then
+        TASK_RESP=$(curl -s "$BASE_URL/tasks/$FIRING_TASK_ID")
+        if echo "$TASK_RESP" | grep -q '"status":"completed"'; then
+            pass "Firing task completed"
+        else
+            fail "Firing task completed" "completed" "$TASK_RESP"
+        fi
+    fi
+
+    if [ -n "$RESOLVED_TASK_ID" ]; then
+        TASK_RESP=$(curl -s "$BASE_URL/tasks/$RESOLVED_TASK_ID")
+        if echo "$TASK_RESP" | grep -q '"status":"completed"'; then
+            pass "Resolved task completed"
+        else
+            fail "Resolved task completed" "completed" "$TASK_RESP"
+        fi
+    fi
+}
+
+# Test: Batch alerts (multiple instances)
+test_webhook_batch_alerts() {
+    info "Testing webhook: batch alerts (3 instances)"
+
+    RESULT=$(send_alertmanager_webhook '{
+        "version": "4",
+        "status": "firing",
+        "groupKey": "{}:{alertname=\"HighCPU\"}",
+        "commonLabels": {"alertname": "HighCPU", "aqsh_task": "alert-handler"},
+        "externalURL": "http://alertmanager:9093",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {"alertname": "HighCPU", "aqsh_task": "alert-handler", "instance": "app-1", "severity": "warning"},
+                "annotations": {"summary": "CPU high on app-1"},
+                "startsAt": "2024-01-01T00:00:00Z",
+                "endsAt": "0001-01-01T00:00:00Z",
+                "fingerprint": "test-batch-001"
+            },
+            {
+                "status": "firing",
+                "labels": {"alertname": "HighCPU", "aqsh_task": "alert-handler", "instance": "app-2", "severity": "warning"},
+                "annotations": {"summary": "CPU high on app-2"},
+                "startsAt": "2024-01-01T00:00:00Z",
+                "endsAt": "0001-01-01T00:00:00Z",
+                "fingerprint": "test-batch-002"
+            },
+            {
+                "status": "firing",
+                "labels": {"alertname": "HighCPU", "aqsh_task": "alert-handler", "instance": "app-3", "severity": "critical"},
+                "annotations": {"summary": "CPU high on app-3"},
+                "startsAt": "2024-01-01T00:00:00Z",
+                "endsAt": "0001-01-01T00:00:00Z",
+                "fingerprint": "test-batch-003"
+            }
+        ]
+    }')
+
+    HTTP_CODE=$(echo "$RESULT" | tail -1)
+    RESP=$(echo "$RESULT" | head -n -1)
+
+    if [ "$HTTP_CODE" = "202" ]; then
+        pass "Webhook batch alerts returns 202"
+    else
+        fail "Webhook batch alerts returns 202" "202" "$HTTP_CODE"
+    fi
+
+    # Count task_id occurrences — should be 3 independent tasks
+    TASK_COUNT=$(echo "$RESP" | grep -o '"task_id"' | wc -l | tr -d ' ')
+    if [ "$TASK_COUNT" = "3" ]; then
+        pass "Batch created 3 independent tasks"
+    else
+        fail "Batch created 3 independent tasks" "3" "$TASK_COUNT (resp: $RESP)"
+    fi
+}
+
+# Test: Unknown task in webhook
+test_webhook_unknown_task() {
+    info "Testing webhook: unknown task"
+
+    RESULT=$(send_alertmanager_webhook '{
+        "version": "4",
+        "status": "firing",
+        "groupKey": "{}:{alertname=\"Unknown\"}",
+        "commonLabels": {},
+        "externalURL": "http://alertmanager:9093",
+        "alerts": [{
+            "status": "firing",
+            "labels": {"alertname": "nonexistent-task", "instance": "x", "severity": "info"},
+            "annotations": {"summary": "This should fail"},
+            "startsAt": "2024-01-01T00:00:00Z",
+            "endsAt": "0001-01-01T00:00:00Z",
+            "fingerprint": "test-unknown-001"
+        }]
+    }')
+
+    HTTP_CODE=$(echo "$RESULT" | tail -1)
+    RESP=$(echo "$RESULT" | head -n -1)
+
+    if [ "$HTTP_CODE" = "400" ]; then
+        pass "Webhook unknown task returns 400"
+    else
+        fail "Webhook unknown task returns 400" "400" "$HTTP_CODE"
+    fi
+
+    if echo "$RESP" | grep -q '"error".*unknown task'; then
+        pass "Webhook unknown task error message"
+    else
+        fail "Webhook unknown task error message" "unknown task" "$RESP"
+    fi
+}
+
 # Main
 echo "========================================" >&2
 echo "aqsh Integration Tests" >&2
@@ -502,6 +743,13 @@ test_task_no_result_file
 echo "" >&2
 echo "--- Log Streaming Tests ---" >&2
 test_realtime_log_streaming
+
+echo "" >&2
+echo "--- Alertmanager Webhook Tests ---" >&2
+test_webhook_single_alert
+test_webhook_firing_resolved
+test_webhook_batch_alerts
+test_webhook_unknown_task
 
 echo "" >&2
 echo "--- Metrics Tests (after tasks) ---" >&2

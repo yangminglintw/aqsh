@@ -1,0 +1,15 @@
+global:
+  resolve_timeout: 1m
+
+route:
+  receiver: aqsh-webhook
+  group_by: ['alertname']
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 1h
+
+receivers:
+  - name: aqsh-webhook
+    webhook_configs:
+      - url: 'http://aqsh:8080/webhooks/alertmanager'
+        send_resolved: true

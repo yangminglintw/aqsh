@@ -1,0 +1,39 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379"
+
+  aqsh:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    environment:
+      AQSH_MODE: both
+      AQSH_REDIS_ADDR: redis:6379
+    volumes:
+      - ../../tasks.yaml:/etc/aqsh/tasks.yaml:ro
+      - ../../tasks:/tasks:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - aqsh
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+    depends_on:
+      - aqsh

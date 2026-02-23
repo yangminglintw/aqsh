@@ -1,0 +1,11 @@
+groups:
+  - name: aqsh-test
+    rules:
+      - alert: HighMemory
+        expr: up == 1
+        for: 0m
+        labels:
+          severity: critical
+          aqsh_task: alert-handler
+        annotations:
+          summary: "Test alert for aqsh webhook integration"
