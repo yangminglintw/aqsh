@@ -33,6 +33,7 @@ verify:
 manifests:
   rawYaml:
   - k8s/namespace.yaml
+  - k8s/auth.yaml
   - k8s/redis.yaml
   - k8s/aqsh.yaml
 
