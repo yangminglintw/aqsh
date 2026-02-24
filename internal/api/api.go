@@ -353,6 +353,7 @@ func (s *Server) handleAlertmanagerWebhook(w http.ResponseWriter, r *http.Reques
 			continue
 		}
 
+		log.Printf("Webhook: enqueued task %q (id=%s) for alert %s", taskName, info.ID, alert.Fingerprint)
 		successCount++
 		results = append(results, alertResult{
 			AlertFingerprint: alert.Fingerprint,

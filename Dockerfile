@@ -28,7 +28,7 @@ FROM debian:bookworm-slim
 ARG DEBUG=false
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates tzdata wget \
+    bash ca-certificates tzdata wget curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -38,6 +38,10 @@ COPY --from=builder /build/aqsh /usr/local/bin/aqsh
 
 # Create directories for config and task scripts
 RUN mkdir -p /etc/aqsh /tasks /coverage
+
+# Copy default tasks config and scripts
+COPY tasks.yaml /etc/aqsh/tasks.yaml
+COPY tasks/ /tasks/
 
 # Default environment
 ENV AQSH_MODE=both \

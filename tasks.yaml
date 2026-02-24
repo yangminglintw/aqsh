@@ -72,3 +72,10 @@ tasks:
     timeout: 5m
     max_retry: 1
     input: []
+
+  latency-handler:
+    script: latency-handler.sh
+    description: "Handle high latency alerts"
+    timeout: 5m
+    max_retry: 1
+    input: []

@@ -12,3 +12,4 @@ fi
 echo "Processing remediation for $ALERT_NAME..."
 # Actual remediation logic goes here
 echo "Remediation complete"
+echo "Task logs available at: GET /tasks/$AQSH_TASK_ID/logs"

@@ -9,3 +9,12 @@ groups:
           aqsh_task: alert-handler
         annotations:
           summary: "Test alert for aqsh webhook integration"
+
+      - alert: HighLatency
+        expr: up == 1
+        for: 0m
+        labels:
+          severity: warning
+          aqsh_task: latency-handler
+        annotations:
+          summary: "Test alert for multi-route verification"

@@ -1,11 +1,15 @@
 #!/bin/bash
 # E2E test: Prometheus → Alertmanager → aqsh webhook → task execution
 #
-# Validates the full alerting pipeline:
+# Validates the full alerting pipeline with multi-alert routing:
 #   1. Prometheus scrapes aqsh and evaluates alert rules
-#   2. Alert fires and is sent to Alertmanager
-#   3. Alertmanager sends webhook to aqsh
-#   4. aqsh creates and executes the alert-handler task
+#   2. Alerts fire and are sent to Alertmanager
+#   3. Alertmanager sends webhooks to aqsh (one per alert group)
+#   4. aqsh routes each alert to the correct task script
+#
+# Alert routing under test:
+#   HighMemory  (aqsh_task=alert-handler)   → alert-handler.sh
+#   HighLatency (aqsh_task=latency-handler)  → latency-handler.sh
 #
 # Usage: ./research/alertmanager/test.sh
 
@@ -74,11 +78,80 @@ wait_for() {
     return 1
 }
 
+# Poll aqsh container logs for a task enqueue log line, extract task ID
+# Usage: wait_for_enqueue <task_name> <timeout_seconds>
+# Sets: ENQUEUE_TASK_ID on success
+wait_for_enqueue() {
+    local task_name="$1" timeout="$2"
+    local elapsed=0
+    ENQUEUE_TASK_ID=""
+
+    info "Waiting for $task_name to be enqueued (timeout: ${timeout}s)..."
+    while [ $elapsed -lt "$timeout" ]; do
+        LOGS=$($COMPOSE logs aqsh 2>&1)
+        MATCH=$(echo "$LOGS" | grep "enqueued task \"$task_name\"" || true)
+        if [ -n "$MATCH" ]; then
+            ENQUEUE_TASK_ID=$(echo "$MATCH" | head -1 | sed 's/.*id=\([^)]*\).*/\1/')
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+        printf "."
+    done
+    echo ""
+    return 1
+}
+
+# Wait for a task to reach a terminal status (completed/failed)
+# Usage: wait_for_task_done <task_id> <timeout_seconds>
+# Sets: TASK_STATUS on success
+wait_for_task_done() {
+    local task_id="$1" timeout="$2"
+    local elapsed=0
+    TASK_STATUS=""
+
+    info "Waiting for task $task_id to complete (timeout: ${timeout}s)..."
+    while [ $elapsed -lt "$timeout" ]; do
+        TASK_STATUS=$(curl -sf "http://localhost:8080/tasks/$task_id" 2>/dev/null | jq -r '.status' 2>/dev/null || echo "")
+        if [ "$TASK_STATUS" = "completed" ] || [ "$TASK_STATUS" = "failed" ]; then
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+        printf "."
+    done
+    echo ""
+    return 1
+}
+
+# Verify a task's log output contains expected strings
+# Usage: verify_task_logs <task_id> <task_label> <expected_line> ...
+verify_task_logs() {
+    local task_id="$1" label="$2"
+    shift 2
+
+    local logs
+    logs=$(curl -sf "http://localhost:8080/tasks/$task_id/logs?follow=false" 2>/dev/null || echo "")
+
+    info "GET /tasks/$task_id/logs ($label):"
+    echo "$logs" | grep '^data: ' | sed 's/^data: //' || true
+    echo "---"
+
+    for expected in "$@"; do
+        if echo "$logs" | grep -q "$expected"; then
+            pass "$label output: $expected"
+        else
+            fail "$label output" "$expected" "not found in task logs"
+        fi
+    done
+}
+
 # ============================================
 # Start
 # ============================================
 echo "========================================"
 echo "Alertmanager Integration E2E Test"
+echo "  Routes: HighMemory→alert-handler, HighLatency→latency-handler"
 echo "========================================"
 
 # ============================================
@@ -104,9 +177,10 @@ else
 fi
 
 # ============================================
-# Step 3: Wait for Prometheus alert to fire
+# Step 3: Wait for both Prometheus alerts to fire
 # ============================================
-step "3/6" "Waiting for Prometheus alert to fire..."
+step "3/6" "Waiting for Prometheus alerts to fire (HighMemory + HighLatency)..."
+
 if wait_for "Prometheus HighMemory alert" "http://localhost:9090/api/v1/alerts" \
     '[.data.alerts[] | select(.labels.alertname == "HighMemory" and .state == "firing")] | length > 0' 45; then
     echo ""
@@ -119,11 +193,24 @@ else
     exit 1
 fi
 
+if wait_for "Prometheus HighLatency alert" "http://localhost:9090/api/v1/alerts" \
+    '[.data.alerts[] | select(.labels.alertname == "HighLatency" and .state == "firing")] | length > 0' 15; then
+    echo ""
+    pass "Prometheus alert HighLatency is firing"
+else
+    echo ""
+    fail "Prometheus alert firing" "HighLatency firing" "timeout after 15s"
+    echo "--- Prometheus alerts ---"
+    curl -sf "http://localhost:9090/api/v1/alerts" 2>/dev/null | jq . || echo "(no response)"
+    exit 1
+fi
+
 # ============================================
-# Step 4: Wait for Alertmanager to receive alert
+# Step 4: Wait for Alertmanager to receive both alerts
 # ============================================
-step "4/6" "Waiting for Alertmanager to receive alert..."
-if wait_for "Alertmanager alert" "http://localhost:9093/api/v2/alerts" \
+step "4/6" "Waiting for Alertmanager to receive both alerts..."
+
+if wait_for "Alertmanager HighMemory" "http://localhost:9093/api/v2/alerts" \
     '[.[] | select(.labels.alertname == "HighMemory")] | length > 0' 30; then
     echo ""
     pass "Alertmanager received HighMemory alert"
@@ -135,60 +222,78 @@ else
     exit 1
 fi
 
-# ============================================
-# Step 5: Wait for aqsh to process webhook task
-# ============================================
-step "5/6" "Waiting for webhook task execution (group_wait=10s + processing)..."
-
-# Check aqsh container logs for alert-handler output
-# The alert-handler.sh prints "Alert: HighMemory (firing)" when executed
-TASK_FOUND=false
-elapsed=0
-while [ $elapsed -lt 45 ]; do
-    LOGS=$($COMPOSE logs aqsh 2>&1)
-    if echo "$LOGS" | grep -q "Alert: HighMemory (firing)"; then
-        TASK_FOUND=true
-        break
-    fi
-    sleep 2
-    elapsed=$((elapsed + 2))
-    printf "."
-done
-echo ""
-
-if [ "$TASK_FOUND" = true ]; then
-    pass "aqsh executed alert-handler task"
+if wait_for "Alertmanager HighLatency" "http://localhost:9093/api/v2/alerts" \
+    '[.[] | select(.labels.alertname == "HighLatency")] | length > 0' 15; then
+    echo ""
+    pass "Alertmanager received HighLatency alert"
 else
-    fail "alert-handler task execution" "Alert: HighMemory (firing) in logs" "not found after 45s"
+    echo ""
+    fail "Alertmanager alert" "HighLatency in alerts" "timeout after 15s"
+    echo "--- Alertmanager alerts ---"
+    curl -sf "http://localhost:9093/api/v2/alerts" 2>/dev/null | jq . || echo "(no response)"
+    exit 1
+fi
+
+# ============================================
+# Step 5: Wait for both tasks to be enqueued and completed
+# ============================================
+step "5/6" "Waiting for webhook tasks to be enqueued (group_wait=10s + processing)..."
+info "Current aqsh logs:"
+$COMPOSE logs aqsh 2>&1 | tail -20
+
+# Wait for alert-handler task
+if wait_for_enqueue "alert-handler" 45; then
+    echo ""
+    ALERT_TASK_ID="$ENQUEUE_TASK_ID"
+    pass "alert-handler task enqueued (id=$ALERT_TASK_ID)"
+else
+    fail "alert-handler enqueue" "enqueued task log line" "not found after 45s"
     echo "--- aqsh logs ---"
     $COMPOSE logs aqsh 2>&1 | tail -30
+    exit 1
+fi
+
+# Wait for latency-handler task
+if wait_for_enqueue "latency-handler" 30; then
+    echo ""
+    LATENCY_TASK_ID="$ENQUEUE_TASK_ID"
+    pass "latency-handler task enqueued (id=$LATENCY_TASK_ID)"
+else
+    fail "latency-handler enqueue" "enqueued task log line" "not found after 30s"
+    echo "--- aqsh logs ---"
+    $COMPOSE logs aqsh 2>&1 | tail -30
+    exit 1
+fi
+
+# Wait for both tasks to complete
+if wait_for_task_done "$ALERT_TASK_ID" 30; then
+    echo ""
+    pass "alert-handler task $ALERT_TASK_ID finished with status: $TASK_STATUS"
+else
+    fail "alert-handler completion" "completed or failed" "status=$TASK_STATUS after 30s"
+fi
+
+if wait_for_task_done "$LATENCY_TASK_ID" 30; then
+    echo ""
+    pass "latency-handler task $LATENCY_TASK_ID finished with status: $TASK_STATUS"
+else
+    fail "latency-handler completion" "completed or failed" "status=$TASK_STATUS after 30s"
 fi
 
 # ============================================
-# Step 6: Verify task output details
+# Step 6: Verify task outputs via log stream API
 # ============================================
-step "6/6" "Verifying task output..."
+step "6/6" "Verifying task outputs via API..."
 
-LOGS=$($COMPOSE logs aqsh 2>&1)
+verify_task_logs "$ALERT_TASK_ID" "alert-handler" \
+    "Alert: HighMemory (firing)" \
+    "Severity: critical" \
+    "Remediation complete"
 
-# Check alert-handler.sh output lines
-if echo "$LOGS" | grep -q "Severity: critical"; then
-    pass "Task received ALERT_SEVERITY=critical"
-else
-    fail "ALERT_SEVERITY env var" "Severity: critical" "not found in logs"
-fi
-
-if echo "$LOGS" | grep -q "Processing remediation for HighMemory"; then
-    pass "Task ran remediation logic"
-else
-    fail "Remediation logic" "Processing remediation for HighMemory" "not found in logs"
-fi
-
-if echo "$LOGS" | grep -q "Remediation complete"; then
-    pass "Task completed remediation"
-else
-    fail "Remediation complete" "Remediation complete" "not found in logs"
-fi
+verify_task_logs "$LATENCY_TASK_ID" "latency-handler" \
+    "Latency Alert: HighLatency (firing)" \
+    "Severity: warning" \
+    "Latency remediation complete"
 
 # ============================================
 # Results
