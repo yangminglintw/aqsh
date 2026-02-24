@@ -409,6 +409,351 @@ func TestJsonError(t *testing.T) {
 	}
 }
 
+func TestHandleSubmitTaskIdentityRequired(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	tasksConfig := &tasks.TasksConfig{
+		Tasks: map[string]tasks.TaskDef{
+			"test": {Script: "test.sh"},
+		},
+	}
+
+	s := &Server{
+		cfg: &config.Config{
+			IdentityHeader:  "X-Forwarded-User",
+			RequireIdentity: true,
+		},
+		tasks:     tasksConfig,
+		rdb:       rdb,
+		logStream: logs.NewLogStreamer(rdb, time.Hour),
+		client:    asynq.NewClient(asynq.RedisClientOpt{Addr: mr.Addr()}),
+	}
+
+	t.Run("missing identity returns 401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/tasks/test", strings.NewReader(`{}`))
+		req.SetPathValue("name", "test")
+		rec := httptest.NewRecorder()
+
+		s.handleSubmitTask(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected status %d, got %d", http.StatusUnauthorized, rec.Code)
+		}
+
+		var resp map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if _, ok := resp["error"]; !ok {
+			t.Error("expected error in response")
+		}
+	})
+
+	t.Run("with identity header proceeds", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/tasks/test", strings.NewReader(`{}`))
+		req.SetPathValue("name", "test")
+		req.Header.Set("X-Forwarded-User", "alice@example.com")
+		rec := httptest.NewRecorder()
+
+		s.handleSubmitTask(rec, req)
+
+		// Should not be 401 — it will fail later (no asynq client) but that's fine
+		if rec.Code == http.StatusUnauthorized {
+			t.Error("expected request to pass identity check")
+		}
+	})
+}
+
+func TestHandleSubmitTaskIdentityOptional(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	tasksConfig := &tasks.TasksConfig{
+		Tasks: map[string]tasks.TaskDef{
+			"test": {Script: "test.sh"},
+		},
+	}
+
+	s := &Server{
+		cfg: &config.Config{
+			IdentityHeader:  "X-Forwarded-User",
+			RequireIdentity: false,
+		},
+		tasks:     tasksConfig,
+		rdb:       rdb,
+		logStream: logs.NewLogStreamer(rdb, time.Hour),
+		client:    asynq.NewClient(asynq.RedisClientOpt{Addr: mr.Addr()}),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/test", strings.NewReader(`{}`))
+	req.SetPathValue("name", "test")
+	rec := httptest.NewRecorder()
+
+	s.handleSubmitTask(rec, req)
+
+	// Should not be 401 — anonymous allowed
+	if rec.Code == http.StatusUnauthorized {
+		t.Error("expected anonymous request to be allowed when RequireIdentity is false")
+	}
+}
+
+func TestHandleGetTaskIdentity(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	cfg := &config.Config{
+		WorkerQueues: []string{"default"},
+	}
+
+	s := &Server{
+		cfg:       cfg,
+		rdb:       rdb,
+		inspector: asynq.NewInspector(asynq.RedisClientOpt{Addr: mr.Addr()}),
+	}
+
+	// Enqueue a task with identity to test GET response
+	client := asynq.NewClient(asynq.RedisClientOpt{Addr: mr.Addr()})
+	defer client.Close()
+
+	payload := map[string]any{
+		"name":       "test",
+		"created_at": time.Now().Format(time.RFC3339),
+		"identity":   "alice@example.com",
+		"env":        map[string]string{},
+		"payload":    map[string]any{},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+	task := asynq.NewTask("aqsh:job", payloadBytes,
+		asynq.Queue("default"),
+		asynq.Retention(time.Hour),
+	)
+	info, err := client.Enqueue(task)
+	if err != nil {
+		t.Fatalf("failed to enqueue task: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/"+info.ID, nil)
+	req.SetPathValue("id", info.ID)
+	rec := httptest.NewRecorder()
+
+	s.handleGetTask(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp["identity"] != "alice@example.com" {
+		t.Errorf("expected identity='alice@example.com', got %v", resp["identity"])
+	}
+}
+
+func TestHandleGetTaskNoIdentity(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	cfg := &config.Config{
+		WorkerQueues: []string{"default"},
+	}
+
+	s := &Server{
+		cfg:       cfg,
+		rdb:       rdb,
+		inspector: asynq.NewInspector(asynq.RedisClientOpt{Addr: mr.Addr()}),
+	}
+
+	client := asynq.NewClient(asynq.RedisClientOpt{Addr: mr.Addr()})
+	defer client.Close()
+
+	payload := map[string]any{
+		"name":       "test",
+		"created_at": time.Now().Format(time.RFC3339),
+		"env":        map[string]string{},
+		"payload":    map[string]any{},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+	task := asynq.NewTask("aqsh:job", payloadBytes,
+		asynq.Queue("default"),
+		asynq.Retention(time.Hour),
+	)
+	info, err := client.Enqueue(task)
+	if err != nil {
+		t.Fatalf("failed to enqueue task: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/"+info.ID, nil)
+	req.SetPathValue("id", info.ID)
+	rec := httptest.NewRecorder()
+
+	s.handleGetTask(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if _, ok := resp["identity"]; ok {
+		t.Errorf("expected identity to be omitted when not set, got %v", resp["identity"])
+	}
+}
+
+func TestHandleSubmitTaskGroupAuthorization(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	tasksConfig := &tasks.TasksConfig{
+		Tasks: map[string]tasks.TaskDef{
+			"restricted": {
+				Script:        "restricted.sh",
+				AllowedGroups: []string{"admin", "ops"},
+			},
+			"open": {
+				Script: "open.sh",
+			},
+		},
+	}
+
+	s := &Server{
+		cfg: &config.Config{
+			IdentityHeader: "X-Forwarded-User",
+			GroupsHeader:   "X-Forwarded-Groups",
+		},
+		tasks:     tasksConfig,
+		rdb:       rdb,
+		logStream: logs.NewLogStreamer(rdb, time.Hour),
+		client:    asynq.NewClient(asynq.RedisClientOpt{Addr: mr.Addr()}),
+	}
+
+	t.Run("allowed group passes", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/tasks/restricted", strings.NewReader(`{}`))
+		req.SetPathValue("name", "restricted")
+		req.Header.Set("X-Forwarded-Groups", "dev,ops")
+		rec := httptest.NewRecorder()
+
+		s.handleSubmitTask(rec, req)
+
+		if rec.Code != http.StatusAccepted {
+			t.Errorf("expected status %d, got %d: %s", http.StatusAccepted, rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("no matching group returns 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/tasks/restricted", strings.NewReader(`{}`))
+		req.SetPathValue("name", "restricted")
+		req.Header.Set("X-Forwarded-Groups", "dev,staging")
+		rec := httptest.NewRecorder()
+
+		s.handleSubmitTask(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("expected status %d, got %d", http.StatusForbidden, rec.Code)
+		}
+	})
+
+	t.Run("no groups header returns 403 for restricted task", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/tasks/restricted", strings.NewReader(`{}`))
+		req.SetPathValue("name", "restricted")
+		rec := httptest.NewRecorder()
+
+		s.handleSubmitTask(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("expected status %d, got %d", http.StatusForbidden, rec.Code)
+		}
+	})
+
+	t.Run("open task allows anyone", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/tasks/open", strings.NewReader(`{}`))
+		req.SetPathValue("name", "open")
+		rec := httptest.NewRecorder()
+
+		s.handleSubmitTask(rec, req)
+
+		if rec.Code == http.StatusForbidden {
+			t.Error("expected open task to allow anyone")
+		}
+	})
+
+	t.Run("groups with spaces trimmed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/tasks/restricted", strings.NewReader(`{}`))
+		req.SetPathValue("name", "restricted")
+		req.Header.Set("X-Forwarded-Groups", " admin , dev ")
+		rec := httptest.NewRecorder()
+
+		s.handleSubmitTask(rec, req)
+
+		if rec.Code != http.StatusAccepted {
+			t.Errorf("expected status %d, got %d: %s", http.StatusAccepted, rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestSplitGroups(t *testing.T) {
+	tests := []struct {
+		name     string
+		header   string
+		expected []string
+	}{
+		{"empty", "", nil},
+		{"single", "admin", []string{"admin"}},
+		{"multiple", "admin,ops,dev", []string{"admin", "ops", "dev"}},
+		{"with spaces", " admin , ops ", []string{"admin", "ops"}},
+		{"trailing comma", "admin,", []string{"admin"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := splitGroups(tc.header)
+			if len(got) != len(tc.expected) {
+				t.Fatalf("expected %d groups, got %d: %v", len(tc.expected), len(got), got)
+			}
+			for i := range got {
+				if got[i] != tc.expected[i] {
+					t.Errorf("group[%d] = %q, want %q", i, got[i], tc.expected[i])
+				}
+			}
+		})
+	}
+}
+
+func TestHasAnyGroup(t *testing.T) {
+	tests := []struct {
+		name     string
+		user     []string
+		allowed  []string
+		expected bool
+	}{
+		{"match", []string{"dev", "ops"}, []string{"admin", "ops"}, true},
+		{"no match", []string{"dev", "staging"}, []string{"admin", "ops"}, false},
+		{"empty user", nil, []string{"admin"}, false},
+		{"empty allowed", []string{"admin"}, nil, false},
+		{"both empty", nil, nil, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hasAnyGroup(tc.user, tc.allowed)
+			if got != tc.expected {
+				t.Errorf("hasAnyGroup(%v, %v) = %v, want %v", tc.user, tc.allowed, got, tc.expected)
+			}
+		})
+	}
+}
+
 func TestHandleGetLogs(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})

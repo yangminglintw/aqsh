@@ -30,9 +30,10 @@ type Server struct {
 	inspector *asynq.Inspector
 	logStream *logs.LogStreamer
 	rdb       redis.UniversalClient
+	version   string
 }
 
-func New(cfg *config.Config, tasksConfig *tasks.TasksConfig, rdb redis.UniversalClient, asynqOpt asynq.RedisConnOpt) *Server {
+func New(cfg *config.Config, tasksConfig *tasks.TasksConfig, rdb redis.UniversalClient, asynqOpt asynq.RedisConnOpt, version string) *Server {
 	return &Server{
 		cfg:       cfg,
 		tasks:     tasksConfig,
@@ -40,6 +41,7 @@ func New(cfg *config.Config, tasksConfig *tasks.TasksConfig, rdb redis.Universal
 		inspector: asynq.NewInspector(asynqOpt),
 		logStream: logs.NewLogStreamer(rdb, cfg.LogRetention),
 		rdb:       rdb,
+		version:   version,
 	}
 }
 
@@ -89,10 +91,25 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 	taskName := r.PathValue("name")
 
+	identity := r.Header.Get(s.cfg.IdentityHeader)
+	if s.cfg.RequireIdentity && identity == "" {
+		s.jsonError(w, http.StatusUnauthorized, "identity header required")
+		return
+	}
+
 	taskDef, err := s.tasks.Resolve(taskName)
 	if err != nil {
 		s.jsonError(w, http.StatusNotFound, err.Error())
 		return
+	}
+
+	// Group authorization
+	groups := r.Header.Get(s.cfg.GroupsHeader)
+	if len(taskDef.AllowedGroups) > 0 {
+		if !hasAnyGroup(splitGroups(groups), taskDef.AllowedGroups) {
+			s.jsonError(w, http.StatusForbidden, "not authorized for this task")
+			return
+		}
 	}
 
 	var payload map[string]any
@@ -110,6 +127,8 @@ func (s *Server) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
 	taskPayload := worker.TaskPayload{
 		Name:      taskName,
 		CreatedAt: time.Now(),
+		Identity:  identity,
+		Groups:    groups,
 		Env:       env,
 		Payload:   payload,
 	}
@@ -171,10 +190,18 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		"max_retry": info.MaxRetry,
 	}
 
-	// Get created_at from task payload
+	// Get created_at and identity from task payload
 	var payload worker.TaskPayload
-	if err := json.Unmarshal(info.Payload, &payload); err == nil && !payload.CreatedAt.IsZero() {
-		resp["created_at"] = payload.CreatedAt.Format(time.RFC3339)
+	if err := json.Unmarshal(info.Payload, &payload); err == nil {
+		if !payload.CreatedAt.IsZero() {
+			resp["created_at"] = payload.CreatedAt.Format(time.RFC3339)
+		}
+		if payload.Identity != "" {
+			resp["identity"] = payload.Identity
+		}
+		if payload.Groups != "" {
+			resp["groups"] = payload.Groups
+		}
 	}
 
 	// Get started_at from Redis metadata
@@ -376,13 +403,17 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 			inputs = append(inputs, m)
 		}
 
-		result[name] = map[string]any{
+		taskInfo := map[string]any{
 			"description": taskDef.Description,
 			"timeout":     taskDef.Timeout.String(),
 			"max_retry":   taskDef.MaxRetry,
 			"queue":       taskDef.Queue,
 			"input":       inputs,
 		}
+		if len(taskDef.AllowedGroups) > 0 {
+			taskInfo["allowed_groups"] = taskDef.AllowedGroups
+		}
+		result[name] = taskInfo
 	}
 
 	s.jsonResponse(w, http.StatusOK, map[string]any{"tasks": result})
@@ -398,9 +429,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.jsonResponse(w, http.StatusOK, map[string]any{
-		"status": "healthy",
-		"redis":  redisStatus,
-		"mode":   s.cfg.Mode,
+		"status":  "healthy",
+		"version": s.version,
+		"redis":   redisStatus,
+		"mode":    s.cfg.Mode,
 	})
 }
 
@@ -430,6 +462,31 @@ func (s *Server) jsonResponse(w http.ResponseWriter, status int, data any) {
 
 func (s *Server) jsonError(w http.ResponseWriter, status int, message string) {
 	s.jsonResponse(w, status, map[string]string{"error": message})
+}
+
+func splitGroups(header string) []string {
+	if header == "" {
+		return nil
+	}
+	parts := strings.Split(header, ",")
+	groups := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if g := strings.TrimSpace(p); g != "" {
+			groups = append(groups, g)
+		}
+	}
+	return groups
+}
+
+func hasAnyGroup(userGroups, allowedGroups []string) bool {
+	for _, ug := range userGroups {
+		for _, ag := range allowedGroups {
+			if ug == ag {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func stateToStatus(state asynq.TaskState) string {

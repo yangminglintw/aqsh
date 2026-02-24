@@ -6,12 +6,21 @@
 ```http
 POST /tasks/deploy
 Content-Type: application/json
+X-Forwarded-User: alice@example.com
 
 {
   "version": "1.2.3",
   "environment": "prod"
 }
 ```
+
+**Identity Header:**
+
+The identity header (default `X-Forwarded-User`, configurable via `AQSH_IDENTITY_HEADER`) identifies who submitted the task. When `AQSH_REQUIRE_IDENTITY=true`, requests without this header are rejected with 401.
+
+**Group Authorization:**
+
+Tasks with `allowed_groups` in their config require the groups header (default `X-Forwarded-Groups`, configurable via `AQSH_GROUPS_HEADER`) to contain at least one matching group. Groups are comma-separated.
 
 **Response (202 Accepted):**
 ```json
@@ -25,6 +34,8 @@ Content-Type: application/json
 **Errors:**
 | Status | Reason |
 |--------|--------|
+| 401 | Missing identity header (when `AQSH_REQUIRE_IDENTITY=true`) |
+| 403 | Not authorized for this task (group check failed) |
 | 400 | Validation error (missing field, invalid pattern, etc.) |
 | 404 | Unknown task |
 | 503 | Redis unavailable |
@@ -37,6 +48,8 @@ Content-Type: application/json
   "id": "task_01HQXK5V7Z8Y9ABCDEF",
   "queue": "default",
   "status": "completed",
+  "identity": "alice@example.com",
+  "groups": "deploy-team,platform-team",
   "created_at": "2025-12-28T10:00:00Z",
   "started_at": "2025-12-28T10:00:01Z",
   "completed_at": "2025-12-28T10:00:15Z",
@@ -97,6 +110,7 @@ data: Deployment complete.
       "timeout": "10m",
       "max_retry": 2,
       "queue": "default",
+      "allowed_groups": ["deploy-team", "platform-team"],
       "input": [
         {
           "name": "version",
@@ -209,6 +223,7 @@ Content-Type: application/json
 ```json
 {
   "status": "healthy",
+  "version": "0.1.0",
   "redis": "connected",
   "mode": "api"
 }
