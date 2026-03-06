@@ -536,24 +536,70 @@ kubectl --context=<LOCAL_CTX> -n aqsh logs deploy/kube-federated-auth
 
 ### Notes
 
+#### Multi-cluster setup
+
+To validate tokens from multiple remote clusters, add each cluster's CA cert to the ConfigMap and each bootstrap token to the Secret:
+
+```yaml
+# kube-federated-auth-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kube-federated-auth-config
+  namespace: aqsh
+data:
+  clusters.yaml: |
+    clusters:
+      cluster-a:
+        issuer: "https://kubernetes.default.svc.cluster.local"
+        api_server: "https://10.0.1.100:6443"
+        ca_cert: "/etc/kube-federated-auth/config/cluster-a-ca.crt"
+        token_path: "/etc/kube-federated-auth/tokens/cluster-a-token"
+      cluster-b:
+        issuer: "https://kubernetes.default.svc.cluster.local"
+        api_server: "https://10.0.2.100:6443"
+        ca_cert: "/etc/kube-federated-auth/config/cluster-b-ca.crt"
+        token_path: "/etc/kube-federated-auth/tokens/cluster-b-token"
+      cluster-c:
+        issuer: "https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE"
+        # Public OIDC issuer — no api_server or ca_cert needed
+        token_path: "/etc/kube-federated-auth/tokens/cluster-c-token"
+
+    renewal:
+      interval: "1h"
+      token_duration: "168h"
+      renew_before: "48h"
+  cluster-a-ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    <paste cluster-a CA cert here>
+    -----END CERTIFICATE-----
+  cluster-b-ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    <paste cluster-b CA cert here>
+    -----END CERTIFICATE-----
+```
+
+```yaml
+# kube-federated-auth-creds.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kube-federated-auth-creds
+  namespace: aqsh
+type: Opaque
+stringData:
+  cluster-a-token: "<CLUSTER_A_BOOTSTRAP_TOKEN>"
+  cluster-b-token: "<CLUSTER_B_BOOTSTRAP_TOKEN>"
+  cluster-c-token: "<CLUSTER_C_BOOTSTRAP_TOKEN>"
+```
+
+No Deployment changes are needed — the ConfigMap volume at `/config/` and Secret volume at `/tokens/` automatically include all keys as files.
+
+Clusters with a public OIDC issuer (e.g., EKS) don't need `api_server` or `ca_cert` — kube-federated-auth discovers the JWKS endpoint via the issuer URL directly.
+
 #### Multiple clusters with the same issuer URL
 
 Multiple remote clusters can share the same default issuer (e.g., `https://kubernetes.default.svc.cluster.local`). This works correctly as long as each cluster entry has a different `api_server`:
 
 - Different `api_server` values → different JWKS endpoints → different signing keys (KIDs) → kube-federated-auth matches tokens to the correct cluster
 - Without `api_server`, clusters sharing an issuer will be ambiguous and may cause incorrect cluster attribution during token validation
-
-```yaml
-# Correct: same issuer, different api_server
-clusters:
-  cluster-a:
-    issuer: "https://kubernetes.default.svc.cluster.local"
-    api_server: "https://10.0.1.100:6443"
-    ca_cert: "/etc/kube-federated-auth/config/cluster-a-ca.crt"
-    token_path: "/etc/kube-federated-auth/tokens/cluster-a-token"
-  cluster-b:
-    issuer: "https://kubernetes.default.svc.cluster.local"
-    api_server: "https://10.0.2.100:6443"
-    ca_cert: "/etc/kube-federated-auth/config/cluster-b-ca.crt"
-    token_path: "/etc/kube-federated-auth/tokens/cluster-b-token"
-```
