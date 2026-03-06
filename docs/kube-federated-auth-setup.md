@@ -228,7 +228,9 @@ Save this token — you'll create a Secret with it in the next step. Use it prom
 
 All commands in this step target the **local** cluster (where aqsh runs).
 
-### 2a. Create a Secret for remote cluster credentials
+### 2a. Create a Secret for the bootstrap token
+
+The bootstrap token is sensitive — store it in a Secret:
 
 ```yaml
 # kube-federated-auth-creds.yaml
@@ -240,17 +242,15 @@ metadata:
 type: Opaque
 stringData:
   cluster-b-token: "<BOOTSTRAP_TOKEN>"
-  cluster-b-ca.crt: |
-    -----BEGIN CERTIFICATE-----
-    <paste contents of cluster-b-ca.crt here>
-    -----END CERTIFICATE-----
 ```
 
 ```bash
 kubectl --context=<LOCAL_CTX> apply -f kube-federated-auth-creds.yaml
 ```
 
-### 2b. Create a ConfigMap for clusters.yaml
+### 2b. Create a ConfigMap for clusters.yaml and CA certificate
+
+The CA certificate is not sensitive (it's a public key), so it goes in the ConfigMap alongside the cluster configuration:
 
 ```yaml
 # kube-federated-auth-config.yaml
@@ -265,13 +265,17 @@ data:
       cluster-b:
         issuer: "https://kubernetes.default.svc.cluster.local"
         api_server: "https://192.168.1.100:6443"
-        ca_cert: "/etc/kube-federated-auth/creds/cluster-b-ca.crt"
-        token_path: "/etc/kube-federated-auth/creds/cluster-b-token"
+        ca_cert: "/etc/kube-federated-auth/config/cluster-b-ca.crt"
+        token_path: "/etc/kube-federated-auth/tokens/cluster-b-token"
 
     renewal:
       interval: "1h"
       token_duration: "168h"
       renew_before: "48h"
+  cluster-b-ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    <paste contents of cluster-b-ca.crt here>
+    -----END CERTIFICATE-----
 ```
 
 ```bash
@@ -280,21 +284,23 @@ kubectl --context=<LOCAL_CTX> apply -f kube-federated-auth-config.yaml
 
 ### Path mapping reference
 
-Understanding how Secret keys become file paths inside the Pod:
+Understanding how ConfigMap/Secret keys become file paths inside the Pod:
 
 ```
-Layer 1: Secret/ConfigMap         Layer 2: Volume mount           Layer 3: Config reference
-─────────────────────────         ──────────────────────           ──────────────────────────
-Secret key                        mountPath / key-name            clusters.yaml field
+Layer 1: Resource                 Layer 2: Volume mount             Layer 3: Config reference
+────────────────                  ──────────────────────             ──────────────────────────
+ConfigMap key                     mountPath / key-name              clusters.yaml field
 ───────────────────────────────────────────────────────────────────────────────────────────────
-cluster-b-ca.crt          ──►     /etc/kube-federated-auth/creds/ ca_cert:
-                                    cluster-b-ca.crt                "/etc/kube-federated-auth/creds/cluster-b-ca.crt"
+cluster-b-ca.crt          ──►     /etc/kube-federated-auth/config/  ca_cert:
+                                    cluster-b-ca.crt                  "/etc/kube-federated-auth/config/cluster-b-ca.crt"
 
-cluster-b-token           ──►     /etc/kube-federated-auth/creds/ token_path:
-                                    cluster-b-token                 "/etc/kube-federated-auth/creds/cluster-b-token"
+Secret key                        mountPath / key-name              clusters.yaml field
+───────────────────────────────────────────────────────────────────────────────────────────────
+cluster-b-token           ──►     /etc/kube-federated-auth/tokens/  token_path:
+                                    cluster-b-token                   "/etc/kube-federated-auth/tokens/cluster-b-token"
 ```
 
-The Deployment in Step 3 mounts the entire Secret as a single volume. Each Secret key becomes a file in the mount directory.
+The CA certificate is stored in the ConfigMap (non-sensitive), while the bootstrap token is stored in the Secret (sensitive). The Deployment mounts each resource as a separate volume.
 
 ---
 
@@ -363,8 +369,8 @@ spec:
         volumeMounts:
         - name: config
           mountPath: /etc/kube-federated-auth/config
-        - name: creds
-          mountPath: /etc/kube-federated-auth/creds
+        - name: tokens
+          mountPath: /etc/kube-federated-auth/tokens
         readinessProbe:
           httpGet:
             path: /health
@@ -388,7 +394,7 @@ spec:
       - name: config
         configMap:
           name: kube-federated-auth-config
-      - name: creds
+      - name: tokens
         secret:
           secretName: kube-federated-auth-creds
 ---
@@ -543,11 +549,11 @@ clusters:
   cluster-a:
     issuer: "https://kubernetes.default.svc.cluster.local"
     api_server: "https://10.0.1.100:6443"
-    ca_cert: "/etc/kube-federated-auth/creds/cluster-a-ca.crt"
-    token_path: "/etc/kube-federated-auth/creds/cluster-a-token"
+    ca_cert: "/etc/kube-federated-auth/config/cluster-a-ca.crt"
+    token_path: "/etc/kube-federated-auth/tokens/cluster-a-token"
   cluster-b:
     issuer: "https://kubernetes.default.svc.cluster.local"
     api_server: "https://10.0.2.100:6443"
-    ca_cert: "/etc/kube-federated-auth/creds/cluster-b-ca.crt"
-    token_path: "/etc/kube-federated-auth/creds/cluster-b-token"
+    ca_cert: "/etc/kube-federated-auth/config/cluster-b-ca.crt"
+    token_path: "/etc/kube-federated-auth/tokens/cluster-b-token"
 ```
