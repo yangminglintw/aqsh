@@ -40,10 +40,21 @@ By default, aqsh uses [kube-auth-proxy](https://github.com/rophy/kube-auth-proxy
 
 ## Prerequisites
 
+**With kubeconfig access (no admin required):**
+
 - `kubectl` access to the **local cluster** (where aqsh runs)
-- `kubectl` access to the **remote cluster(s)** whose tokens you want to validate
-- Admin permission on the remote cluster to create a ServiceAccount and ClusterRoleBinding
-- The remote cluster's OIDC issuer must be reachable from kube-federated-auth (or you provide `api_server` + `ca_cert` for private clusters)
+- `kubectl` access to the **remote cluster(s)** — enough to read kubeconfig, exec into pods, and decode SA tokens
+- Get the API server address and CA cert from kubeconfig
+- Get the OIDC issuer URL by decoding any SA token's JWT payload (see Step 1a)
+
+**Requires cluster admin on the remote cluster:**
+
+- Create the ServiceAccount, ClusterRole/ClusterRoleBinding, and Role/RoleBinding (Step 1d)
+- Generate a bootstrap token for the ServiceAccount (Step 1e)
+
+**Network requirement:**
+
+- The remote cluster's OIDC issuer must be reachable from kube-federated-auth, or you provide `api_server` + `ca_cert` for private clusters
 
 ---
 
@@ -51,11 +62,40 @@ By default, aqsh uses [kube-auth-proxy](https://github.com/rophy/kube-auth-proxy
 
 For each remote cluster you want to validate tokens from, gather the following. All commands target the **remote** cluster.
 
+> **Navigation:** Steps 1a–1c are read-only operations — you can do these yourself with kubeconfig access. Steps 1d–1e require cluster admin permissions.
+
 ### 1a. Get the OIDC issuer URL
+
+**Option 1: Query the OIDC discovery endpoint**
 
 ```bash
 kubectl --context=<REMOTE_CTX> get --raw /.well-known/openid-configuration | jq -r '.issuer'
 ```
+
+**Option 2: Decode from a ServiceAccount token (when the discovery endpoint returns 403 Forbidden)**
+
+If you have a pod running in the remote cluster, extract the issuer from its mounted SA token:
+
+```bash
+kubectl --context=<REMOTE_CTX> exec <POD_NAME> -n <NAMESPACE> -- \
+  cat /var/run/secrets/kubernetes.io/serviceaccount/token \
+  | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.iss'
+```
+
+**Option 3: Cloud provider CLI**
+
+```bash
+# EKS
+aws eks describe-cluster --name <CLUSTER_NAME> --query 'cluster.identity.oidc.issuer' --output text
+
+# GKE
+gcloud container clusters describe <CLUSTER_NAME> --zone <ZONE> --format='value(selfLink)'
+
+# AKS
+az aks show --resource-group <RG> --name <CLUSTER_NAME> --query 'oidcIssuerProfile.issuerUrl' -o tsv
+```
+
+**Option 4:** Ask the cluster admin team for the issuer URL.
 
 Save this value — it goes into `clusters.yaml` as the `issuer` field.
 
@@ -71,14 +111,22 @@ kubectl --context=<REMOTE_CTX> config view --minify -o jsonpath='{.clusters[0].c
 
 The CA cert is needed when `api_server` points to a private endpoint with a self-signed certificate.
 
-**If the CA is inline (base64) in kubeconfig:**
+Check which format your kubeconfig uses — either inline base64 data (`certificate-authority-data`) or a file path (`certificate-authority`):
+
+```bash
+# Check which field is set
+kubectl --context=<REMOTE_CTX> config view --minify -o json \
+  | jq '.clusters[0].cluster | keys'
+```
+
+**If `certificate-authority-data` (inline base64):**
 
 ```bash
 kubectl --context=<REMOTE_CTX> config view --minify --raw \
   -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d > cluster-b-ca.crt
 ```
 
-**If the CA is a file path in kubeconfig:**
+**If `certificate-authority` (file path):**
 
 ```bash
 CA_PATH=$(kubectl --context=<REMOTE_CTX> config view --minify \
@@ -86,7 +134,18 @@ CA_PATH=$(kubectl --context=<REMOTE_CTX> config view --minify \
 cp "$CA_PATH" cluster-b-ca.crt
 ```
 
+**Alternative: Extract from a running pod**
+
+If you have a pod running in the remote cluster, you can copy the CA cert from the pod's mounted service account:
+
+```bash
+kubectl --context=<REMOTE_CTX> exec <POD_NAME> -n <NAMESPACE> -- \
+  cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt > cluster-b-ca.crt
+```
+
 ### 1d. Create a ServiceAccount on the remote cluster
+
+> **No admin access?** Send the YAML below to the remote cluster's admin team and ask them to apply it.
 
 This SA is used by kube-federated-auth to validate tokens and renew its own credentials on the remote cluster.
 
@@ -153,6 +212,8 @@ kubectl --context=<REMOTE_CTX> apply -f remote-rbac.yaml
 
 ### 1e. Generate a bootstrap token
 
+> **No admin access?** Ask the admin who created the ServiceAccount in Step 1d to run the command below and send you the token output.
+
 This short-lived token bootstraps kube-federated-auth's access to the remote cluster. Once running, it uses TokenRequest to renew its own credentials automatically.
 
 ```bash
@@ -169,10 +230,24 @@ All commands in this step target the **local** cluster (where aqsh runs).
 
 ### 2a. Create a Secret for remote cluster credentials
 
+```yaml
+# kube-federated-auth-creds.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kube-federated-auth-creds
+  namespace: aqsh
+type: Opaque
+stringData:
+  cluster-b-token: "<BOOTSTRAP_TOKEN>"
+  cluster-b-ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    <paste contents of cluster-b-ca.crt here>
+    -----END CERTIFICATE-----
+```
+
 ```bash
-kubectl --context=<LOCAL_CTX> -n aqsh create secret generic kube-federated-auth-creds \
-  --from-file=cluster-b-ca.crt=cluster-b-ca.crt \
-  --from-literal=cluster-b-token="<BOOTSTRAP_TOKEN>"
+kubectl --context=<LOCAL_CTX> apply -f kube-federated-auth-creds.yaml
 ```
 
 ### 2b. Create a ConfigMap for clusters.yaml
@@ -463,3 +538,27 @@ kubectl --context=<LOCAL_CTX> -n aqsh logs deploy/kube-federated-auth
 | `GET` | `/health` | Health check |
 | `GET` | `/clusters` | List clusters and token status |
 | `POST` | `/apis/authentication.k8s.io/v1/tokenreviews` | TokenReview API (K8s-compatible) |
+
+### Notes
+
+#### Multiple clusters with the same issuer URL
+
+Multiple remote clusters can share the same default issuer (e.g., `https://kubernetes.default.svc.cluster.local`). This works correctly as long as each cluster entry has a different `api_server`:
+
+- Different `api_server` values → different JWKS endpoints → different signing keys (KIDs) → kube-federated-auth matches tokens to the correct cluster
+- Without `api_server`, clusters sharing an issuer will be ambiguous and may cause incorrect cluster attribution during token validation
+
+```yaml
+# Correct: same issuer, different api_server
+clusters:
+  cluster-a:
+    issuer: "https://kubernetes.default.svc.cluster.local"
+    api_server: "https://10.0.1.100:6443"
+    ca_cert: "/etc/kube-federated-auth/certs/cluster-a-ca.crt"
+    token_path: "/etc/kube-federated-auth/tokens/cluster-a-token"
+  cluster-b:
+    issuer: "https://kubernetes.default.svc.cluster.local"
+    api_server: "https://10.0.2.100:6443"
+    ca_cert: "/etc/kube-federated-auth/certs/cluster-b-ca.crt"
+    token_path: "/etc/kube-federated-auth/tokens/cluster-b-token"
+```
