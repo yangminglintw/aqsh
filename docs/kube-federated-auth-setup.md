@@ -265,8 +265,8 @@ data:
       cluster-b:
         issuer: "https://kubernetes.default.svc.cluster.local"
         api_server: "https://192.168.1.100:6443"
-        ca_cert: "/etc/kube-federated-auth/certs/cluster-b-ca.crt"
-        token_path: "/etc/kube-federated-auth/tokens/cluster-b-token"
+        ca_cert: "/etc/kube-federated-auth/creds/cluster-b-ca.crt"
+        token_path: "/etc/kube-federated-auth/creds/cluster-b-token"
 
     renewal:
       interval: "1h"
@@ -283,18 +283,18 @@ kubectl --context=<LOCAL_CTX> apply -f kube-federated-auth-config.yaml
 Understanding how Secret keys become file paths inside the Pod:
 
 ```
-Layer 1: Secret/ConfigMap         Layer 2: Volume mount              Layer 3: Config reference
-─────────────────────────         ──────────────────────              ──────────────────────────
-Secret key                        mountPath + items[].path           clusters.yaml field
+Layer 1: Secret/ConfigMap         Layer 2: Volume mount           Layer 3: Config reference
+─────────────────────────         ──────────────────────           ──────────────────────────
+Secret key                        mountPath / key-name            clusters.yaml field
 ───────────────────────────────────────────────────────────────────────────────────────────────
-cluster-b-ca.crt          ──►     /etc/kube-federated-auth/certs/    ca_cert:
-                                    cluster-b-ca.crt                   "/etc/kube-federated-auth/certs/cluster-b-ca.crt"
+cluster-b-ca.crt          ──►     /etc/kube-federated-auth/creds/ ca_cert:
+                                    cluster-b-ca.crt                "/etc/kube-federated-auth/creds/cluster-b-ca.crt"
 
-cluster-b-token           ──►     /etc/kube-federated-auth/tokens/   token_path:
-                                    cluster-b-token                    "/etc/kube-federated-auth/tokens/cluster-b-token"
+cluster-b-token           ──►     /etc/kube-federated-auth/creds/ token_path:
+                                    cluster-b-token                 "/etc/kube-federated-auth/creds/cluster-b-token"
 ```
 
-The Deployment in Step 3 mounts the Secret into two separate volume paths (certs and tokens) using `items` to select specific keys.
+The Deployment in Step 3 mounts the entire Secret as a single volume. Each Secret key becomes a file in the mount directory.
 
 ---
 
@@ -363,10 +363,8 @@ spec:
         volumeMounts:
         - name: config
           mountPath: /etc/kube-federated-auth/config
-        - name: certs
-          mountPath: /etc/kube-federated-auth/certs
-        - name: tokens
-          mountPath: /etc/kube-federated-auth/tokens
+        - name: creds
+          mountPath: /etc/kube-federated-auth/creds
         readinessProbe:
           httpGet:
             path: /health
@@ -390,18 +388,9 @@ spec:
       - name: config
         configMap:
           name: kube-federated-auth-config
-      - name: certs
+      - name: creds
         secret:
           secretName: kube-federated-auth-creds
-          items:
-          - key: cluster-b-ca.crt
-            path: cluster-b-ca.crt
-      - name: tokens
-        secret:
-          secretName: kube-federated-auth-creds
-          items:
-          - key: cluster-b-token
-            path: cluster-b-token
 ---
 apiVersion: v1
 kind: Service
@@ -554,11 +543,11 @@ clusters:
   cluster-a:
     issuer: "https://kubernetes.default.svc.cluster.local"
     api_server: "https://10.0.1.100:6443"
-    ca_cert: "/etc/kube-federated-auth/certs/cluster-a-ca.crt"
-    token_path: "/etc/kube-federated-auth/tokens/cluster-a-token"
+    ca_cert: "/etc/kube-federated-auth/creds/cluster-a-ca.crt"
+    token_path: "/etc/kube-federated-auth/creds/cluster-a-token"
   cluster-b:
     issuer: "https://kubernetes.default.svc.cluster.local"
     api_server: "https://10.0.2.100:6443"
-    ca_cert: "/etc/kube-federated-auth/certs/cluster-b-ca.crt"
-    token_path: "/etc/kube-federated-auth/tokens/cluster-b-token"
+    ca_cert: "/etc/kube-federated-auth/creds/cluster-b-ca.crt"
+    token_path: "/etc/kube-federated-auth/creds/cluster-b-token"
 ```
