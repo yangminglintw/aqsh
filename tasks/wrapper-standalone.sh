@@ -6,9 +6,15 @@
 #   K8s container — auto-resolves from BASH_SOURCE (default, no config needed)
 #   Local dev     — override via env vars: PROJECT_ROOT, SCRIPT_DIR, ENV_SOURCE_SCRIPT, etc.
 
-# === Resolve script directory ===
-WRAPPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="${PROJECT_ROOT:-$(cd "${WRAPPER_DIR}/.." && pwd)}"
+# === Resolve project root ===
+# K8s container: /app exists → use it
+# Local dev: auto-resolve from script location
+if [ -d "/app" ]; then
+    PROJECT_ROOT="/app"
+else
+    WRAPPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROJECT_ROOT="$(cd "${WRAPPER_DIR}/.." && pwd)"
+fi
 
 # === Configuration (overridable via environment) ===
 ENV_SOURCE_SCRIPT="${ENV_SOURCE_SCRIPT:-${PROJECT_ROOT}/scripts/env-setup.sh}"
