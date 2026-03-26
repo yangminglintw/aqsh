@@ -1,19 +1,20 @@
 #!/bin/bash
 # Standalone Wrapper Script Template
 # Generic 3-step wrapper: env setup → pre-script → main script
+#
+# Path resolution:
+#   K8s container — auto-resolves from BASH_SOURCE (default, no config needed)
+#   Local dev     — override via env vars: PROJECT_ROOT, SCRIPT_DIR, ENV_SOURCE_SCRIPT, etc.
 
 # === Resolve script directory ===
 WRAPPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${WRAPPER_DIR}/.." && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "${WRAPPER_DIR}/.." && pwd)}"
 
-# === Configuration ===
-# Environment setup (optional - absolute or relative to PROJECT_ROOT, leave empty to skip)
-ENV_SOURCE_SCRIPT="${PROJECT_ROOT}/scripts/env-setup.sh"   # Script to source (sets env vars)
-PRE_SCRIPT="${PROJECT_ROOT}/scripts/pre-script.sh"         # Pre-execution script (optional)
-
-# Main script configuration
-SCRIPT_DIR="${PROJECT_ROOT}/scripts"       # Directory to cd into for main script
-SCRIPT_NAME="your-script.sh"              # Main script filename
+# === Configuration (overridable via environment) ===
+ENV_SOURCE_SCRIPT="${ENV_SOURCE_SCRIPT:-${PROJECT_ROOT}/scripts/env-setup.sh}"
+PRE_SCRIPT="${PRE_SCRIPT:-${PROJECT_ROOT}/scripts/pre-script.sh}"
+SCRIPT_DIR="${SCRIPT_DIR:-${PROJECT_ROOT}/scripts}"
+SCRIPT_NAME="${SCRIPT_NAME:-your-script.sh}"
 
 # === Main Execution ===
 echo "=== Wrapper Script Started ==="
