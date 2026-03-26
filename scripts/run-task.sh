@@ -1,7 +1,18 @@
 #!/bin/bash
 # Usage:
-#   NAMESPACE=my-namespace TASK_NAME=check-ns ./scripts/run-task.sh
-#   NAMESPACE=prod-ns TASK_NAME=my-task BASE_URL=http://my-server:8080 ./scripts/run-task.sh
+#   In K8s pod (auto-reads /var/run/secrets/kubernetes.io/serviceaccount/token):
+#     NAMESPACE=my-ns TASK_NAME=check-ns ./scripts/run-task.sh
+#
+#   Local dev (no token file, skip auth):
+#     NAMESPACE=my-ns TASK_NAME=check-ns ./scripts/run-task.sh
+#
+#   Explicit token:
+#     TOKEN=my-token NAMESPACE=my-ns TASK_NAME=check-ns ./scripts/run-task.sh
+#
+#   Custom server:
+#     NAMESPACE=prod-ns TASK_NAME=my-task BASE_URL=http://my-server:8080 ./scripts/run-task.sh
+#
+# See: https://github.com/rophy/aqsh
 set -euo pipefail
 
 # =============================================================================
@@ -10,6 +21,10 @@ set -euo pipefail
 BASE_URL="${BASE_URL:-http://localhost:8080}"
 TASK_NAME="${TASK_NAME:-my-task}"
 NAMESPACE="${NAMESPACE:-}"
+TOKEN_PATH="${TOKEN_PATH:-/var/run/secrets/kubernetes.io/serviceaccount/token}"
+TOKEN="${TOKEN:-}"
+AUTH_USER="${AUTH_USER:-}"
+AUTH_GROUPS="${AUTH_GROUPS:-}"
 
 # =============================================================================
 # Preflight checks
@@ -27,8 +42,24 @@ if [[ -z "$NAMESPACE" ]]; then
   exit 1
 fi
 
+AUTH_HEADERS=()
+if [[ -z "$TOKEN" && -f "$TOKEN_PATH" ]]; then
+  TOKEN=$(cat "$TOKEN_PATH")
+fi
+if [[ -n "$TOKEN" ]]; then
+  AUTH_HEADERS+=(-H "Authorization: Bearer ${TOKEN}")
+fi
+if [[ -n "$AUTH_USER" ]]; then
+  AUTH_HEADERS+=(-H "X-Forwarded-User: ${AUTH_USER}")
+fi
+if [[ -n "$AUTH_GROUPS" ]]; then
+  AUTH_HEADERS+=(-H "X-Forwarded-Groups: ${AUTH_GROUPS}")
+fi
+
 echo "==> Submitting task '${TASK_NAME}' with namespace '${NAMESPACE}'"
 echo "    Server: ${BASE_URL}"
+[[ -n "$AUTH_USER" ]] && echo "    User: ${AUTH_USER}"
+[[ -n "$AUTH_GROUPS" ]] && echo "    Groups: ${AUTH_GROUPS}"
 echo
 
 # =============================================================================
@@ -36,6 +67,7 @@ echo
 # =============================================================================
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
   -H "Content-Type: application/json" \
+  "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" \
   -d "{\"namespace\": \"${NAMESPACE}\"}" \
   "${BASE_URL}/tasks/${TASK_NAME}")
 
@@ -57,7 +89,7 @@ echo
 # =============================================================================
 echo "==> Streaming logs..."
 echo "---"
-curl -s -N "${BASE_URL}/tasks/${TASK_ID}/logs" | while IFS= read -r line; do
+curl -s -N "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" "${BASE_URL}/tasks/${TASK_ID}/logs" | while IFS= read -r line; do
   if [[ "$line" == "event: eof" ]]; then
     break
   fi
@@ -72,4 +104,4 @@ echo
 # 3. Get final result
 # =============================================================================
 echo "==> Task result:"
-curl -s "${BASE_URL}/tasks/${TASK_ID}" | jq .
+curl -s "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" "${BASE_URL}/tasks/${TASK_ID}" | jq .
