@@ -1,0 +1,8 @@
+# ACL: AQSH_GROUPS (source app namespace) → allowed target DB namespaces
+# In K8s, mount this file via ConfigMap to ${PROJECT_ROOT}/config/acl.yaml
+acl:
+  app-ns-1:
+    - db-ns-1
+    - db-ns-2
+  app-ns-2:
+    - db-ns-3

@@ -21,6 +21,7 @@ ENV_SOURCE_SCRIPT="${ENV_SOURCE_SCRIPT:-${PROJECT_ROOT}/scripts/env-setup.sh}"
 PRE_SCRIPT="${PRE_SCRIPT:-${PROJECT_ROOT}/scripts/pre-script.sh}"
 SCRIPT_DIR="${SCRIPT_DIR:-${PROJECT_ROOT}/scripts}"
 SCRIPT_NAME="${SCRIPT_NAME:-your-script.sh}"
+ACL_FILE="${ACL_FILE:-${PROJECT_ROOT}/config/acl.yaml}"
 
 # === Main Execution ===
 echo "=== Wrapper Script Started ==="
@@ -56,7 +57,32 @@ if [ -n "$PRE_SCRIPT" ]; then
     fi
 fi
 
-# --- Step 3: Main Script Execution (needs cd for legacy scripts) ---
+# --- Step 3: ACL Check ---
+# AQSH_GROUPS = source app namespace (from kube-auth-proxy via X-Forwarded-Groups)
+# NAMESPACE   = target DB namespace (task input parameter)
+if [ -f "$ACL_FILE" ] && [ -n "$NAMESPACE" ]; then
+    echo "--- ACL Check ---"
+    if ! command -v yq &>/dev/null; then
+        echo "ERROR: 'yq' is required for ACL check but not installed." >&2
+        exit 1
+    fi
+    ACL_PASS=false
+    IFS=',' read -ra GROUPS <<< "$AQSH_GROUPS"
+    for GROUP in "${GROUPS[@]}"; do
+        GROUP=$(echo "$GROUP" | xargs)
+        if yq -e ".acl.\"${GROUP}\"[] | select(. == \"${NAMESPACE}\")" "$ACL_FILE" &>/dev/null; then
+            echo "ACL: group '${GROUP}' is allowed to operate on namespace '${NAMESPACE}'"
+            ACL_PASS=true
+            break
+        fi
+    done
+    if [ "$ACL_PASS" = false ]; then
+        echo "ERROR: ACL denied — groups '${AQSH_GROUPS}' not allowed to operate on namespace '${NAMESPACE}'"
+        exit 1
+    fi
+fi
+
+# --- Step 4: Main Script Execution (needs cd for legacy scripts) ---
 echo "--- Main Script Execution ---"
 cd "$SCRIPT_DIR" || { echo "ERROR: Cannot cd to $SCRIPT_DIR"; exit 1; }
 echo "Changed to script directory: $(pwd)"
