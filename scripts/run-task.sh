@@ -101,7 +101,30 @@ echo "---"
 echo
 
 # =============================================================================
-# 3. Get final result
+# 3. Get final result (retry-aware)
 # =============================================================================
-echo "==> Task result:"
-curl -s "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" "${BASE_URL}/tasks/${TASK_ID}" | jq .
+while true; do
+  RESULT=$(curl -s "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" "${BASE_URL}/tasks/${TASK_ID}")
+  STATUS=$(echo "$RESULT" | jq -r '.status')
+
+  if [[ "$STATUS" == "retrying" ]]; then
+    RETRIED=$(echo "$RESULT" | jq -r '.retried')
+    echo "==> Task retrying (attempt ${RETRIED}), monitoring..."
+    echo "---"
+    curl -s -N "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" "${BASE_URL}/tasks/${TASK_ID}/logs" | while IFS= read -r line; do
+      if [[ "$line" == "event: eof" ]]; then
+        break
+      fi
+      if [[ "$line" == data:* ]]; then
+        echo "${line#data: }"
+      fi
+    done
+    echo "---"
+    echo
+    continue
+  fi
+
+  echo "==> Task result (${STATUS}):"
+  echo "$RESULT" | jq .
+  break
+done
