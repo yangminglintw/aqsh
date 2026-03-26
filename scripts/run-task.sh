@@ -1,4 +1,7 @@
 #!/bin/bash
+# Usage:
+#   NAMESPACE=my-namespace TASK_NAME=check-ns ./scripts/run-task.sh
+#   NAMESPACE=prod-ns TASK_NAME=my-task BASE_URL=http://my-server:8080 ./scripts/run-task.sh
 set -euo pipefail
 
 # =============================================================================
