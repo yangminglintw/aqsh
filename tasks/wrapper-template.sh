@@ -63,8 +63,8 @@ fi
 if [ -f "$ACL_FILE" ] && [ -n "$NAMESPACE" ]; then
     echo "--- ACL Check ---"
     ACL_PASS=false
-    IFS=',' read -ra GROUPS <<< "$AQSH_GROUPS"
-    for GROUP in "${GROUPS[@]}"; do
+    IFS=',' read -ra ACL_GROUPS <<< "$AQSH_GROUPS"
+    for GROUP in "${ACL_GROUPS[@]}"; do
         GROUP=$(echo "$GROUP" | xargs)
         # awk: find group section, then check if namespace is listed under it
         if awk -v group="$GROUP" -v ns="$NAMESPACE" '
