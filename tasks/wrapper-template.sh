@@ -62,15 +62,17 @@ fi
 # NAMESPACE   = target DB namespace (task input parameter)
 if [ -f "$ACL_FILE" ] && [ -n "$NAMESPACE" ]; then
     echo "--- ACL Check ---"
-    if ! command -v yq &>/dev/null; then
-        echo "ERROR: 'yq' is required for ACL check but not installed." >&2
-        exit 1
-    fi
     ACL_PASS=false
     IFS=',' read -ra GROUPS <<< "$AQSH_GROUPS"
     for GROUP in "${GROUPS[@]}"; do
         GROUP=$(echo "$GROUP" | xargs)
-        if yq -e ".acl.\"${GROUP}\"[] | select(. == \"${NAMESPACE}\")" "$ACL_FILE" &>/dev/null; then
+        # awk: find group section, then check if namespace is listed under it
+        if awk -v group="$GROUP" -v ns="$NAMESPACE" '
+            $0 ~ "^  " group ":$" { found=1; next }
+            found && /^  [^ ]/ { found=0 }
+            found && $0 ~ "^    - " ns "$" { r=1; exit }
+            END { exit !r }
+        ' "$ACL_FILE"; then
             echo "ACL: group '${GROUP}' is allowed to operate on namespace '${NAMESPACE}'"
             ACL_PASS=true
             break
