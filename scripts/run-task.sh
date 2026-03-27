@@ -96,9 +96,18 @@ stream_logs() {
     id_header=(-H "Last-Event-ID: ${LAST_EVENT_ID}")
   fi
   echo "---"
-  curl -s -N "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" \
+  local log_output
+  log_output=$(curl -s -w "\n__HTTP_%{http_code}__" -N "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" \
     "${id_header[@]+"${id_header[@]}"}" \
-    "${BASE_URL}/tasks/${TASK_ID}/logs" | while IFS= read -r line; do
+    "${BASE_URL}/tasks/${TASK_ID}/logs?follow=false")
+  local log_http
+  log_http=$(echo "$log_output" | grep -o '__HTTP_[0-9]*__' | grep -o '[0-9]*')
+  if [[ "$log_http" != "200" && -n "$log_http" ]]; then
+    echo "(logs unavailable — HTTP ${log_http})"
+    echo "---"
+    return
+  fi
+  echo "$log_output" | grep -v '__HTTP_' | while IFS= read -r line; do
     if [[ "$line" == "event: eof" ]]; then
       break
     fi
@@ -119,7 +128,14 @@ stream_logs() {
 }
 
 while true; do
-  RESULT=$(curl -s "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" "${BASE_URL}/tasks/${TASK_ID}")
+  RESULT=$(curl -s -w "\n%{http_code}" "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" "${BASE_URL}/tasks/${TASK_ID}")
+  POLL_HTTP=$(echo "$RESULT" | tail -1)
+  RESULT=$(echo "$RESULT" | sed '$d')
+  if [[ "$POLL_HTTP" != "200" ]]; then
+    echo "ERROR: Failed to get task status (HTTP ${POLL_HTTP})" >&2
+    echo "$RESULT" | jq . 2>/dev/null || echo "$RESULT" >&2
+    exit 1
+  fi
   STATUS=$(echo "$RESULT" | jq -r '.status')
 
   case "$STATUS" in
