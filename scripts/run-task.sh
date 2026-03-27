@@ -85,46 +85,70 @@ echo "==> Task submitted: ${TASK_ID}"
 echo
 
 # =============================================================================
-# 2. Stream logs
+# 2. Monitor task (pending → running → retrying → completed/failed)
 # =============================================================================
-echo "==> Streaming logs..."
-echo "---"
-curl -s -N "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" "${BASE_URL}/tasks/${TASK_ID}/logs" | while IFS= read -r line; do
-  if [[ "$line" == "event: eof" ]]; then
-    break
-  fi
-  if [[ "$line" == data:* ]]; then
-    echo "${line#data: }"
-  fi
-done
-echo "---"
-echo
+LAST_EVENT_ID=""
+POLL_INTERVAL=3
 
-# =============================================================================
-# 3. Get final result (retry-aware)
-# =============================================================================
+stream_logs() {
+  local id_header=()
+  if [[ -n "$LAST_EVENT_ID" ]]; then
+    id_header=(-H "Last-Event-ID: ${LAST_EVENT_ID}")
+  fi
+  echo "---"
+  curl -s -N "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" \
+    "${id_header[@]+"${id_header[@]}"}" \
+    "${BASE_URL}/tasks/${TASK_ID}/logs" | while IFS= read -r line; do
+    if [[ "$line" == "event: eof" ]]; then
+      break
+    fi
+    if [[ "$line" == id:* ]]; then
+      # Write last event ID to temp file (subshell can't update parent var)
+      echo "${line#id: }" > "/tmp/aqsh_last_id_$$"
+    fi
+    if [[ "$line" == data:* ]]; then
+      echo "${line#data: }"
+    fi
+  done
+  echo "---"
+  # Read back last event ID from temp file
+  if [[ -f "/tmp/aqsh_last_id_$$" ]]; then
+    LAST_EVENT_ID=$(cat "/tmp/aqsh_last_id_$$")
+    rm -f "/tmp/aqsh_last_id_$$"
+  fi
+}
+
 while true; do
   RESULT=$(curl -s "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" "${BASE_URL}/tasks/${TASK_ID}")
   STATUS=$(echo "$RESULT" | jq -r '.status')
 
-  if [[ "$STATUS" == "retrying" ]]; then
-    RETRIED=$(echo "$RESULT" | jq -r '.retried')
-    echo "==> Task retrying (attempt ${RETRIED}), monitoring..."
-    echo "---"
-    curl -s -N "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" "${BASE_URL}/tasks/${TASK_ID}/logs" | while IFS= read -r line; do
-      if [[ "$line" == "event: eof" ]]; then
-        break
-      fi
-      if [[ "$line" == data:* ]]; then
-        echo "${line#data: }"
-      fi
-    done
-    echo "---"
-    echo
-    continue
-  fi
-
-  echo "==> Task result (${STATUS}):"
-  echo "$RESULT" | jq .
-  break
+  case "$STATUS" in
+    pending|scheduled)
+      echo "==> Task ${STATUS}, waiting..."
+      sleep "$POLL_INTERVAL"
+      ;;
+    running)
+      echo "==> Streaming logs..."
+      stream_logs
+      echo
+      ;;
+    retrying)
+      RETRIED=$(echo "$RESULT" | jq -r '.retried')
+      MAX_RETRY=$(echo "$RESULT" | jq -r '.max_retry')
+      echo "==> Task retrying (${RETRIED}/${MAX_RETRY}), waiting for next attempt..."
+      sleep "$POLL_INTERVAL"
+      ;;
+    completed|failed)
+      echo "==> Task result (${STATUS}):"
+      echo "$RESULT" | jq .
+      break
+      ;;
+    *)
+      echo "==> Unknown status: ${STATUS}"
+      echo "$RESULT" | jq .
+      break
+      ;;
+  esac
 done
+
+rm -f "/tmp/aqsh_last_id_$$"
