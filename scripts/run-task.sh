@@ -135,7 +135,10 @@ while true; do
     retrying)
       RETRIED=$(echo "$RESULT" | jq -r '.retried')
       MAX_RETRY=$(echo "$RESULT" | jq -r '.max_retry')
-      echo "==> Task retrying (${RETRIED}/${MAX_RETRY}), waiting for next attempt..."
+      echo "==> Task retrying (${RETRIED}/${MAX_RETRY}), fetching logs..."
+      stream_logs
+      echo
+      echo "==> Waiting for next attempt..."
       sleep "$POLL_INTERVAL"
       ;;
     completed|failed)
