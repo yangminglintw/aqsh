@@ -139,6 +139,9 @@ while true; do
       sleep "$POLL_INTERVAL"
       ;;
     completed|failed)
+      echo "==> Fetching logs..."
+      stream_logs
+      echo
       echo "==> Task result (${STATUS}):"
       echo "$RESULT" | jq .
       break
