@@ -14,6 +14,7 @@
 #
 # See: https://github.com/rophy/aqsh
 set -euo pipefail
+trap 'echo "ERROR: Script exited unexpectedly at line $LINENO (exit code: $?)" >&2' ERR
 
 # =============================================================================
 # Configurable variables (override via environment)
@@ -75,8 +76,8 @@ HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 
 if [[ "$HTTP_CODE" != "202" ]]; then
-  echo "ERROR: Failed to submit task (HTTP ${HTTP_CODE})" >&2
-  echo "$BODY" | jq . 2>/dev/null || echo "$BODY" >&2
+  echo "ERROR: Failed to submit task (HTTP ${HTTP_CODE})"
+  echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
   exit 1
 fi
 
@@ -132,8 +133,8 @@ while true; do
   POLL_HTTP=$(echo "$RESULT" | tail -1)
   RESULT=$(echo "$RESULT" | sed '$d')
   if [[ "$POLL_HTTP" != "200" ]]; then
-    echo "ERROR: Failed to get task status (HTTP ${POLL_HTTP})" >&2
-    echo "$RESULT" | jq . 2>/dev/null || echo "$RESULT" >&2
+    echo "ERROR: Failed to get task status (HTTP ${POLL_HTTP})"
+    echo "$RESULT" | jq . 2>/dev/null || echo "$RESULT"
     exit 1
   fi
   STATUS=$(echo "$RESULT" | jq -r '.status')
