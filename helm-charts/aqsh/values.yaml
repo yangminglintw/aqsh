@@ -17,6 +17,7 @@ config:
   identityHeader: "X-Forwarded-User"
   requireIdentity: false
   groupsHeader: "X-Forwarded-Groups"
+  aclConfig: /app/config/acl.yaml
 
 redis:
   addr: "redis:6379"
@@ -75,3 +76,5 @@ tasksConfigContent: ""
 #       #!/bin/bash
 #       echo "hello"
 scriptsContent: {}
+# If set, overrides files/acl.yaml
+aclConfigContent: ""

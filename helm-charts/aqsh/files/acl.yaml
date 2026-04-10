@@ -1,0 +1,5 @@
+acl:
+  system:serviceaccounts:team-order:
+    - order-db-prd
+  system:serviceaccounts:team-payment:
+    - payment-db-prd

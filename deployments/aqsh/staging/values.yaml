@@ -36,6 +36,14 @@ aqsh:
             type: string
             pattern: '^v?\d+\.\d+\.\d+$'
 
+  # Instance-specific ACL (overrides base chart files/acl.yaml)
+  aclConfigContent: |
+    acl:
+      system:serviceaccounts:team-order:
+        - order-db-prd
+      system:serviceaccounts:team-payment:
+        - payment-db-prd
+
   # Instance-specific scripts (overrides base chart files/scripts/*)
   scriptsContent:
     my-deploy.sh: |

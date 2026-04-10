@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "aqsh.fullname" . }}-acl-config
+  labels:
+    {{- include "aqsh.labels" . | nindent 4 }}
+data:
+  acl.yaml: |
+    {{- if .Values.aclConfigContent }}
+    {{- .Values.aclConfigContent | nindent 4 }}
+    {{- else }}
+    {{- .Files.Get "files/acl.yaml" | nindent 4 }}
+    {{- end }}

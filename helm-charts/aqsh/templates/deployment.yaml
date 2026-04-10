@@ -14,6 +14,7 @@ spec:
       annotations:
         checksum/tasks-config: {{ include (print $.Template.BasePath "/configmap-tasks.yaml") . | sha256sum }}
         checksum/task-scripts: {{ include (print $.Template.BasePath "/configmap-scripts.yaml") . | sha256sum }}
+        checksum/acl-config: {{ include (print $.Template.BasePath "/configmap-acl.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -70,6 +71,8 @@ spec:
               value: {{ .Values.config.requireIdentity | quote }}
             - name: AQSH_GROUPS_HEADER
               value: {{ .Values.config.groupsHeader | quote }}
+            - name: AQSH_ACL_CONFIG
+              value: {{ .Values.config.aclConfig | quote }}
             - name: AQSH_REDIS_ADDR
               value: {{ .Values.redis.addr | quote }}
             {{- if .Values.redis.password }}
@@ -92,6 +95,8 @@ spec:
               mountPath: /etc/aqsh
             - name: task-scripts
               mountPath: /tasks
+            - name: acl-config
+              mountPath: /app/config
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -113,6 +118,9 @@ spec:
           configMap:
             name: {{ include "aqsh.fullname" . }}-task-scripts
             defaultMode: 0755
+        - name: acl-config
+          configMap:
+            name: {{ include "aqsh.fullname" . }}-acl-config
 
       {{- with .Values.nodeSelector }}
       nodeSelector:
