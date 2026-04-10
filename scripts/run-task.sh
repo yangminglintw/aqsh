@@ -33,12 +33,44 @@ CURL_MAX_TIME="${CURL_MAX_TIME:-30}"
 # =============================================================================
 # Preflight checks
 # =============================================================================
-for cmd in curl jq; do
-  if ! command -v "$cmd" &>/dev/null; then
-    echo "ERROR: '$cmd' is required but not installed." >&2
-    exit 1
+if ! command -v curl &>/dev/null; then
+  echo "ERROR: 'curl' is required but not installed." >&2
+  exit 1
+fi
+
+HAS_JQ=false
+if command -v jq &>/dev/null; then
+  HAS_JQ=true
+else
+  echo "WARNING: 'jq' not found, JSON output will not be formatted." >&2
+fi
+
+# JSON helpers — auto fallback when jq is not available
+json_field() {
+  local field="$1"
+  if $HAS_JQ; then
+    jq -r ".$field"
+  else
+    grep -o "\"$field\":[[:space:]]*\"[^\"]*\"" | sed "s/\"$field\":[[:space:]]*\"//;s/\"$//" | head -1
   fi
-done
+}
+
+json_field_num() {
+  local field="$1"
+  if $HAS_JQ; then
+    jq -r ".$field"
+  else
+    grep -o "\"$field\":[[:space:]]*[0-9]*" | sed "s/\"$field\":[[:space:]]*//" | head -1
+  fi
+}
+
+json_pretty() {
+  if $HAS_JQ; then
+    jq .
+  else
+    cat
+  fi
+}
 
 if [[ -z "$NAMESPACE" ]]; then
   echo "ERROR: NAMESPACE is required." >&2
@@ -81,11 +113,11 @@ BODY=$(echo "$RESPONSE" | sed '$d')
 
 if [[ "$HTTP_CODE" != "202" ]]; then
   echo "ERROR: Failed to submit task (HTTP ${HTTP_CODE})"
-  echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+  echo "$BODY" | json_pretty
   exit 1
 fi
 
-TASK_ID=$(echo "$BODY" | jq -r '.id')
+TASK_ID=$(echo "$BODY" | json_field id)
 echo "==> Task submitted: ${TASK_ID}"
 echo
 
@@ -151,10 +183,10 @@ while true; do
   RESULT=$(echo "$RESULT" | sed '$d')
   if [[ "$POLL_HTTP" != "200" ]]; then
     echo "ERROR: Failed to get task status (HTTP ${POLL_HTTP})"
-    echo "$RESULT" | jq . 2>/dev/null || echo "$RESULT"
+    echo "$RESULT" | json_pretty
     exit 1
   fi
-  STATUS=$(echo "$RESULT" | jq -r '.status')
+  STATUS=$(echo "$RESULT" | json_field status)
 
   case "$STATUS" in
     pending|scheduled)
@@ -168,8 +200,8 @@ while true; do
       echo
       ;;
     retrying)
-      RETRIED=$(echo "$RESULT" | jq -r '.retried')
-      MAX_RETRY=$(echo "$RESULT" | jq -r '.max_retry')
+      RETRIED=$(echo "$RESULT" | json_field_num retried)
+      MAX_RETRY=$(echo "$RESULT" | json_field_num max_retry)
       echo "==> Task retrying (${RETRIED}/${MAX_RETRY}), fetching logs..."
       stream_logs
       echo
@@ -179,7 +211,7 @@ while true; do
       fi
       if [[ "$STUCK_COUNT" -ge "$MAX_STUCK_COUNT" ]]; then
         echo "ERROR: Task appears stuck in retrying state after ${STUCK_COUNT} polls. Giving up." >&2
-        echo "$RESULT" | jq .
+        echo "$RESULT" | json_pretty
         exit 1
       fi
       echo "==> Waiting for next attempt..."
@@ -190,12 +222,12 @@ while true; do
       stream_logs
       echo
       echo "==> Task result (${STATUS}):"
-      echo "$RESULT" | jq .
+      echo "$RESULT" | json_pretty
       break
       ;;
     *)
       echo "==> Unknown status: ${STATUS}"
-      echo "$RESULT" | jq .
+      echo "$RESULT" | json_pretty
       break
       ;;
   esac
