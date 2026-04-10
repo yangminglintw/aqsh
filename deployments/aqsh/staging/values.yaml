@@ -1,0 +1,45 @@
+aqsh:
+  image:
+    repository: registry.example.com/aqsh
+    tag: "1.2.0"
+
+  redis:
+    addr: "redis-master.redis.svc:6379"
+
+  config:
+    workerQueues: "default,long-running"
+    requireIdentity: true
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "1"
+
+  # Instance-specific tasks (overrides base chart files/tasks.yaml)
+  tasksConfigContent: |
+    defaults:
+      timeout: 10m
+      max_retry: 2
+      queue: default
+    tasks:
+      my-deploy:
+        script: my-deploy.sh
+        description: "Deploy service"
+        timeout: 15m
+        input:
+          - name: version
+            env: VERSION
+            required: true
+            type: string
+            pattern: '^v?\d+\.\d+\.\d+$'
+
+  # Instance-specific scripts (overrides base chart files/scripts/*)
+  scriptsContent:
+    my-deploy.sh: |
+      #!/bin/bash
+      set -e
+      echo "Deploying version $VERSION..."
+      # add deployment logic here

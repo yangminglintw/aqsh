@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aqsh.fullname" . }}
+  labels:
+    {{- include "aqsh.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "aqsh.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/tasks-config: {{ include (print $.Template.BasePath "/configmap-tasks.yaml") . | sha256sum }}
+        checksum/task-scripts: {{ include (print $.Template.BasePath "/configmap-scripts.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "aqsh.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- if .Values.waitForRedis.enabled }}
+      initContainers:
+        - name: wait-for-redis
+          image: {{ .Values.waitForRedis.image }}
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z {{ .Values.redis.addr | replace ":" " " }}; do
+                echo "Waiting for Redis..."
+                sleep 2
+              done
+              echo "Redis is ready"
+      {{- end }}
+
+      containers:
+        - name: aqsh
+          image: {{ include "aqsh.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          env:
+            - name: AQSH_MODE
+              value: {{ .Values.config.mode | quote }}
+            - name: AQSH_BIND
+              value: {{ .Values.config.bind | quote }}
+            - name: AQSH_TASKS_CONFIG
+              value: {{ .Values.config.tasksConfig | quote }}
+            - name: AQSH_TASKS_DIR
+              value: {{ .Values.config.tasksDir | quote }}
+            - name: AQSH_WORKER_QUEUES
+              value: {{ .Values.config.workerQueues | quote }}
+            - name: AQSH_WORKER_CONCURRENCY
+              value: {{ .Values.config.workerConcurrency | quote }}
+            - name: AQSH_LOG_RETENTION
+              value: {{ .Values.config.logRetention | quote }}
+            - name: AQSH_RESULT_RETENTION
+              value: {{ .Values.config.resultRetention | quote }}
+            - name: AQSH_IDENTITY_HEADER
+              value: {{ .Values.config.identityHeader | quote }}
+            - name: AQSH_REQUIRE_IDENTITY
+              value: {{ .Values.config.requireIdentity | quote }}
+            - name: AQSH_GROUPS_HEADER
+              value: {{ .Values.config.groupsHeader | quote }}
+            - name: AQSH_REDIS_ADDR
+              value: {{ .Values.redis.addr | quote }}
+            {{- if .Values.redis.password }}
+            - name: AQSH_REDIS_PASSWORD
+              value: {{ .Values.redis.password | quote }}
+            {{- end }}
+            - name: AQSH_REDIS_DB
+              value: {{ .Values.redis.db | quote }}
+            {{- if .Values.redis.sentinel.enabled }}
+            - name: AQSH_REDIS_SENTINEL_ADDRS
+              value: {{ join "," .Values.redis.sentinel.addrs | quote }}
+            - name: AQSH_REDIS_SENTINEL_MASTER
+              value: {{ .Values.redis.sentinel.master | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: tasks-config
+              mountPath: /etc/aqsh
+            - name: task-scripts
+              mountPath: /tasks
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+      volumes:
+        - name: tasks-config
+          configMap:
+            name: {{ include "aqsh.fullname" . }}-tasks-config
+        - name: task-scripts
+          configMap:
+            name: {{ include "aqsh.fullname" . }}-task-scripts
+            defaultMode: 0755
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

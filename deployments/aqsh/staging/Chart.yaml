@@ -1,0 +1,8 @@
+apiVersion: v2
+name: aqsh-staging
+description: aqsh deployment for staging
+version: 0.1.0
+dependencies:
+  - name: aqsh
+    version: "0.1.0"
+    repository: "file://../../../helm-charts/aqsh"

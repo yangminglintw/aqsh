@@ -1,0 +1,6 @@
+dependencies:
+- name: aqsh
+  repository: file://../../../helm-charts/aqsh
+  version: 0.1.0
+digest: sha256:15ee172c26a82a8864fd0aad9d2da73a9380f6e41c5dbd2d2b2f611c5405afa8
+generated: "2026-04-10T14:12:13.7352+08:00"

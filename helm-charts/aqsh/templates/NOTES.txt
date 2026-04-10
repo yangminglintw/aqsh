@@ -1,0 +1,17 @@
+aqsh has been deployed.
+
+Application URL (within cluster):
+  http://{{ include "aqsh.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+To check pod status:
+  kubectl get pods -n {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "aqsh.name" . }},app.kubernetes.io/instance={{ .Release.Name }}"
+
+To view logs:
+  kubectl logs -n {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "aqsh.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -f
+
+To edit tasks configuration:
+  Edit helm-charts/aqsh/files/tasks.yaml, then run:
+    helm upgrade {{ .Release.Name }} ./helm-charts/aqsh
+
+To add a new task script:
+  Add the script to helm-charts/aqsh/files/scripts/ and run helm upgrade.
