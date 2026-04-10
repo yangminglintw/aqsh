@@ -51,7 +51,7 @@ json_field() {
   if $HAS_JQ; then
     jq -r ".$field"
   else
-    grep -o "\"$field\":[[:space:]]*\"[^\"]*\"" | sed "s/\"$field\":[[:space:]]*\"//;s/\"$//" | head -1
+    grep -o "\"$field\":[[:space:]]*\"[^\"]*\"" | sed "s/\"$field\":[[:space:]]*\"//;s/\"$//" | head -1 || echo ""
   fi
 }
 
@@ -60,7 +60,7 @@ json_field_num() {
   if $HAS_JQ; then
     jq -r ".$field"
   else
-    grep -o "\"$field\":[[:space:]]*[0-9]*" | sed "s/\"$field\":[[:space:]]*//" | head -1
+    grep -o "\"$field\":[[:space:]]*[0-9]*" | sed "s/\"$field\":[[:space:]]*//" | head -1 || echo "0"
   fi
 }
 
