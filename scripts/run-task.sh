@@ -26,6 +26,9 @@ TOKEN_PATH="${TOKEN_PATH:-/var/run/secrets/kubernetes.io/serviceaccount/token}"
 TOKEN="${TOKEN:-}"
 AUTH_USER="${AUTH_USER:-}"
 AUTH_GROUPS="${AUTH_GROUPS:-}"
+MONITOR_TIMEOUT="${MONITOR_TIMEOUT:-600}"
+CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-5}"
+CURL_MAX_TIME="${CURL_MAX_TIME:-30}"
 
 # =============================================================================
 # Preflight checks
@@ -66,7 +69,8 @@ echo
 # =============================================================================
 # 1. Submit task
 # =============================================================================
-RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+RESPONSE=$(curl -s -w "\n%{http_code}" --connect-timeout "$CURL_CONNECT_TIMEOUT" --max-time "$CURL_MAX_TIME" \
+  -X POST \
   -H "Content-Type: application/json" \
   "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" \
   -d "{\"namespace\": \"${NAMESPACE}\"}" \
@@ -98,7 +102,8 @@ stream_logs() {
   fi
   echo "---"
   local log_output
-  log_output=$(curl -s -w "\n__HTTP_%{http_code}__" -N "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" \
+  log_output=$(curl -s -w "\n__HTTP_%{http_code}__" --connect-timeout "$CURL_CONNECT_TIMEOUT" --max-time "$CURL_MAX_TIME" \
+    -N "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" \
     "${id_header[@]+"${id_header[@]}"}" \
     "${BASE_URL}/tasks/${TASK_ID}/logs?follow=false")
   local log_http
@@ -128,8 +133,20 @@ stream_logs() {
   fi
 }
 
+START_TIME=$(date +%s)
+STUCK_COUNT=0
+MAX_STUCK_COUNT=10
+
 while true; do
-  RESULT=$(curl -s -w "\n%{http_code}" "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" "${BASE_URL}/tasks/${TASK_ID}")
+  # Check overall timeout
+  ELAPSED=$(( $(date +%s) - START_TIME ))
+  if [[ "$ELAPSED" -ge "$MONITOR_TIMEOUT" ]]; then
+    echo "ERROR: Monitor timeout after ${MONITOR_TIMEOUT}s. Task ${TASK_ID} may still be running." >&2
+    exit 1
+  fi
+
+  RESULT=$(curl -s -w "\n%{http_code}" --connect-timeout "$CURL_CONNECT_TIMEOUT" --max-time "$CURL_MAX_TIME" \
+    "${AUTH_HEADERS[@]+"${AUTH_HEADERS[@]}"}" "${BASE_URL}/tasks/${TASK_ID}")
   POLL_HTTP=$(echo "$RESULT" | tail -1)
   RESULT=$(echo "$RESULT" | sed '$d')
   if [[ "$POLL_HTTP" != "200" ]]; then
@@ -145,6 +162,7 @@ while true; do
       sleep "$POLL_INTERVAL"
       ;;
     running)
+      STUCK_COUNT=0
       echo "==> Streaming logs..."
       stream_logs
       echo
@@ -155,6 +173,15 @@ while true; do
       echo "==> Task retrying (${RETRIED}/${MAX_RETRY}), fetching logs..."
       stream_logs
       echo
+      STUCK_COUNT=$((STUCK_COUNT + 1))
+      if [[ "$RETRIED" -ge "$MAX_RETRY" ]]; then
+        echo "WARNING: All retries exhausted, task should transition to failed soon..." >&2
+      fi
+      if [[ "$STUCK_COUNT" -ge "$MAX_STUCK_COUNT" ]]; then
+        echo "ERROR: Task appears stuck in retrying state after ${STUCK_COUNT} polls. Giving up." >&2
+        echo "$RESULT" | jq .
+        exit 1
+      fi
       echo "==> Waiting for next attempt..."
       sleep "$POLL_INTERVAL"
       ;;
