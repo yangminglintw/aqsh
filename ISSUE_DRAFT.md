@@ -1,4 +1,4 @@
-# [DRAFT] feat: support per-identity (user/serviceaccount) authorization, not only groups
+# feat: add `allowed_users` for per-ServiceAccount authorization
 
 ## Problem
 
@@ -13,9 +13,18 @@ X-Forwarded-Groups: system:serviceaccounts,
                     system:authenticated
 ```
 
-Kubernetes TokenReview **never** includes the full SA `system:serviceaccount:<ns>:<name>` as a group — that string only appears as the username. Because aqsh's authorization (`internal/api/api.go` `hasAnyGroup`) is pure string equality and `X-Forwarded-User` is read but never compared against any allowlist (only logged / stored for audit), there is currently no way to write a task that allows only `my-sa` in `my-ns`.
+Kubernetes TokenReview **never** includes the full SA `system:serviceaccount:<ns>:<name>` as a group — that string only appears as the username. See the upstream Kubernetes documentation: [Service account tokens — Authentication](https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/#bound-service-account-tokens) and [Service account roles and groups](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#service-account-permissions).
 
-## Reproduction (rophy/aqsh main, commit `1eded18`)
+Because aqsh's authorization (`internal/api/api.go` `hasAnyGroup`) is pure string equality and `X-Forwarded-User` is read but never compared against any allowlist (only logged / stored for audit), there is currently no way to write a task that allows only `my-sa` in `my-ns`.
+
+## Environment
+
+- aqsh: `rophy/aqsh@1eded18` (current `main` HEAD at the time of writing)
+- Go: 1.24 (per `Dockerfile`)
+- Docker Desktop on macOS (Darwin 25.1)
+- Test runner: `docker compose up` with `redis:7-alpine` + locally-built aqsh image
+
+## Reproduction
 
 `tasks.yaml`:
 
@@ -37,11 +46,22 @@ Test matrix (all calls send `X-Forwarded-User: system:serviceaccount:rdsma:sertd
 | B | `ns-only` | `system:serviceaccounts,system:authenticated` (no `rdsma`) | **403** ✅ correctly denied |
 | C | `sa-only` | `system:serviceaccounts,system:serviceaccounts:rdsma,system:authenticated` | **403** ❌ no realistic header value can grant this |
 
-A and B confirm `allowed_groups` matching is correct. C is the gap: **there exists no value of `X-Forwarded-Groups` that any TokenReview-based proxy would produce that allows `sa-only` to succeed.**
+A and B confirm `allowed_groups` matching is correct. C is the gap: **there exists no value of `X-Forwarded-Groups` that any TokenReview-based proxy would produce that allows `sa-only` to succeed**, because Kubernetes does not synthesize a per-SA group.
+
+Reproducible curl (against a local `docker compose` instance with the tasks.yaml above):
+
+```bash
+curl -sS -o /dev/stderr -w "HTTP %{http_code}\n" \
+  -X POST http://localhost:8080/tasks/sa-only \
+  -H "X-Forwarded-User: system:serviceaccount:rdsma:sertdxkkk" \
+  -H "X-Forwarded-Groups: system:serviceaccounts,system:serviceaccounts:rdsma,system:authenticated" \
+  -d '{}'
+# => HTTP 403  {"error":"not authorized for this task"}
+```
 
 ## Use case
 
-Multi-tenant cluster where multiple ServiceAccounts share a namespace, but only one specific SA should be allowed to run a sensitive task (e.g., production deploy). Namespace-level authorization is too coarse — every SA in `platform` can run prod deploys, not just `platform/deployer`.
+Multi-tenant cluster where multiple ServiceAccounts share a namespace, but only one specific SA should be allowed to run a sensitive task (e.g., production deploy). Namespace-level authorization is too coarse — every SA in `platform` can run prod deploys today, not just `platform/deployer`.
 
 ## Proposal
 
@@ -54,20 +74,22 @@ tasks:
     allowed_users:
       - "system:serviceaccount:platform:deployer"
     allowed_groups:
-      - "system:serviceaccounts:platform-admin"   # OR-combined with allowed_users
+      - "system:serviceaccounts:platform-admin"
 ```
 
-Semantics: a request passes if it matches **any** entry in either list (OR). When `allowed_users` is empty, behavior is identical to today's `allowed_groups`-only check, so this is fully backward-compatible.
+### Semantics: OR-combined
+
+A request passes if it matches **any** entry in either list. This mirrors Kubernetes RBAC `RoleBinding.subjects` semantics, where any matching subject (user, group, or service account) grants access — adding an `allowed_users` entry should be additive, not narrow what `allowed_groups` already permits. When `allowed_users` is empty, behavior is identical to today, so the change is fully backward-compatible.
 
 ### Optional follow-up: federation awareness
 
-When [`kube-federated-auth`](https://github.com/rophy/kube-federated-auth) is used, kube-auth-proxy adds `X-Forwarded-Extra-Cluster-Name`. Same-named SAs across clusters currently collide (cluster-A's `platform/deployer` and cluster-B's `platform/deployer` are indistinguishable to aqsh). A future enhancement could match on `(cluster, user)` for cross-cluster setups — but that can be a separate issue.
+When [`kube-federated-auth`](https://github.com/rophy/kube-federated-auth) is used, kube-auth-proxy adds `X-Forwarded-Extra-Cluster-Name`. Same-named SAs across clusters currently collide (cluster-A's `platform/deployer` and cluster-B's `platform/deployer` are indistinguishable to aqsh). A future enhancement could match on `(cluster, user)` for cross-cluster setups — likely a separate issue.
 
-## Sketch of changes
+## Sketch of changes (starting point for discussion — happy to defer to your preferred design)
 
-- `internal/tasks/tasks.go` (TaskDef): add `AllowedUsers []string` with `yaml:"allowed_users"`
+- `internal/tasks/tasks.go` (`TaskDef`): add `AllowedUsers []string` with `yaml:"allowed_users"`
 - `internal/api/api.go` (around the existing `hasAnyGroup` check): add a parallel identity check, OR-combined with the groups check
 - `internal/api/api_test.go`: cases for users-only, groups-only, both (OR), neither (open)
 - `README.md` / `docs/api.md`: document `allowed_users` in the authorization section
 
-Happy to send a PR if you're open to this direction.
+I'm willing to open a PR if this approach is acceptable; otherwise, I'm happy to align with whatever shape you'd prefer.
