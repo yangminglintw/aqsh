@@ -16,22 +16,23 @@ type TasksConfig struct {
 }
 
 type TaskDefaults struct {
-	Timeout      string `yaml:"timeout"`
-	MaxRetry     int    `yaml:"max_retry"`
-	RetryDelay   string `yaml:"retry_delay"`
-	Queue        string `yaml:"queue"`
-	LogRetention string `yaml:"log_retention"`
+	Timeout       string   `yaml:"timeout"`
+	MaxRetry      int      `yaml:"max_retry"`
+	RetryDelay    string   `yaml:"retry_delay"`
+	Queue         string   `yaml:"queue"`
+	LogRetention  string   `yaml:"log_retention"`
+	AllowedGroups []string `yaml:"allowed_groups"`
 }
 
 type TaskDef struct {
-	Script        string   `yaml:"script"`
-	Description   string   `yaml:"description"`
-	Timeout       string   `yaml:"timeout"`
-	MaxRetry      *int     `yaml:"max_retry"`
-	RetryDelay    string   `yaml:"retry_delay"`
-	Queue         string   `yaml:"queue"`
-	AllowedGroups []string `yaml:"allowed_groups"`
-	Input         []Input  `yaml:"input"`
+	Script        string    `yaml:"script"`
+	Description   string    `yaml:"description"`
+	Timeout       string    `yaml:"timeout"`
+	MaxRetry      *int      `yaml:"max_retry"`
+	RetryDelay    string    `yaml:"retry_delay"`
+	Queue         string    `yaml:"queue"`
+	AllowedGroups *[]string `yaml:"allowed_groups"`
+	Input         []Input   `yaml:"input"`
 }
 
 type Input struct {
@@ -221,6 +222,11 @@ func (c *TasksConfig) Resolve(name string) (*ResolvedTask, error) {
 		queue = "default"
 	}
 
+	allowedGroups := c.Defaults.AllowedGroups
+	if task.AllowedGroups != nil {
+		allowedGroups = *task.AllowedGroups
+	}
+
 	return &ResolvedTask{
 		Name:          name,
 		Script:        task.Script,
@@ -229,7 +235,7 @@ func (c *TasksConfig) Resolve(name string) (*ResolvedTask, error) {
 		MaxRetry:      maxRetry,
 		RetryDelay:    retryDelayDur,
 		Queue:         queue,
-		AllowedGroups: task.AllowedGroups,
+		AllowedGroups: allowedGroups,
 		Input:         task.Input,
 	}, nil
 }

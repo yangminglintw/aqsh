@@ -20,7 +20,7 @@ The identity header (default `X-Forwarded-User`, configurable via `AQSH_IDENTITY
 
 **Group Authorization:**
 
-Tasks with `allowed_groups` in their config require the groups header (default `X-Forwarded-Groups`, configurable via `AQSH_GROUPS_HEADER`) to contain at least one matching group. Groups are comma-separated.
+Tasks with task-level or default `allowed_groups` in their config require the groups header (default `X-Forwarded-Groups`, configurable via `AQSH_GROUPS_HEADER`) to contain at least one matching group. Groups are comma-separated.
 
 **Response (202 Accepted):**
 ```json
