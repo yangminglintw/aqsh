@@ -437,9 +437,23 @@ tasks:
     input: [...]
 ```
 
+You can also set default groups for all tasks:
+
+```yaml
+defaults:
+  allowed_groups: [deploy-team, platform-team]
+
+tasks:
+  deploy:
+    script: /tasks/deploy.sh
+    input: [...]
+```
+
+Task-level `allowed_groups` overrides the default. Set `allowed_groups: []` on a task to make that task open to all users, or to all authenticated users when `AQSH_REQUIRE_IDENTITY=true`.
+
 The proxy sets `X-Forwarded-Groups` (configurable via `AQSH_GROUPS_HEADER`) as a comma-separated list. If a task has `allowed_groups`, aqsh checks that at least one of the user's groups matches. Returns 403 if no match.
 
-Tasks without `allowed_groups` are open to all users (or all authenticated users when `AQSH_REQUIRE_IDENTITY=true`).
+Tasks without task-level or default `allowed_groups` are open to all users, or all authenticated users when `AQSH_REQUIRE_IDENTITY=true`.
 
 ---
 
